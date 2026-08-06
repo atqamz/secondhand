@@ -290,6 +290,13 @@ func runStatusFleet(cmd *cobra.Command, home string, client *herdr.Client, asJSO
 // Writes the fleet blocks onto doc rather than a writer, so the bare command can put its identity fields
 // above the same overview.
 func appendFleet(doc *axi.Doc, views []taskView, holds []state.Hold, cols []axi.Column[taskView], leadHelp ...string) {
+	attention := appendFleetState(doc, views, holds, cols)
+	// An unanswered configuration question leads: it is the one thing here the fleet cannot proceed
+	// without, and doc.Help renders a single list, so it cannot be a second block.
+	doc.Help(append(slices.Clone(leadHelp), fleetHelp(views, attention)...)...)
+}
+
+func appendFleetState(doc *axi.Doc, views []taskView, holds []state.Hold, cols []axi.Column[taskView]) int {
 	attention := 0
 	for _, v := range views {
 		if needsAttention(v) {
@@ -302,9 +309,7 @@ func appendFleet(doc *axi.Doc, views []taskView, holds []state.Hold, cols []axi.
 	doc.Int("held", len(holds))
 	axi.Table(doc, "tasks", views, cols)
 	axi.Table(doc, "holds", holds, holdFields)
-	// An unanswered configuration question leads: it is the one thing here the fleet cannot proceed
-	// without, and doc.Help renders a single list, so it cannot be a second block.
-	doc.Help(append(slices.Clone(leadHelp), fleetHelp(views, attention)...)...)
+	return attention
 }
 
 func fleetViews(cmd *cobra.Command, home string, client *herdr.Client) ([]taskView, []state.Hold, error) {

@@ -123,16 +123,15 @@ func runBareRoot(t *testing.T) string {
 }
 
 func TestBareInvocationLeadsWithTheFleetItManages(t *testing.T) {
+	home := setupSessionHome(t)
 	t.Setenv("HAND_HARNESS", harness.Claude)
-	home := t.TempDir()
-	t.Chdir(home)
-	mkFleetDirs(t, home)
 	if err := state.Write(home, state.Task{ID: "task-1", Project: "myproj", Kind: state.KindShip}); err != nil {
 		t.Fatal(err)
 	}
 
 	out := runBareRoot(t)
 	for _, want := range []string{
+		"session_bootstrap: complete\n",
 		"tool: hand\n",
 		"version: test\n",
 		"count: 1\n",
@@ -151,10 +150,8 @@ func TestBareInvocationLeadsWithTheFleetItManages(t *testing.T) {
 // The bare command is the session hook, so it is the only place a supervising agent learns that the
 // fleet is not configured yet, and the only place the question can be put in front of the operator.
 func TestBareInvocationReportsConfigurationStateAndAsksTheOperator(t *testing.T) {
+	setupSessionHome(t)
 	t.Setenv("HAND_HARNESS", "unknown")
-	home := t.TempDir()
-	t.Chdir(home)
-	mkFleetDirs(t, home)
 
 	out := runBareRoot(t)
 	for _, want := range []string{
@@ -184,6 +181,14 @@ func TestBareInvocationReportsConfigurationStateAndAsksTheOperator(t *testing.T)
 	}
 	if strings.Contains(out, "Ask the operator") {
 		t.Fatalf("out = %q, want no configuration question once nothing applicable is missing", out)
+	}
+}
+
+func TestBareInvocationInHomeUsesTheSessionStartRenderer(t *testing.T) {
+	setupSessionHome(t)
+	want := runSessionStartForTest(t)
+	if got := runBareRoot(t); got != want {
+		t.Fatalf("bare hand = %q, want the exact hand session start overview %q", got, want)
 	}
 }
 
