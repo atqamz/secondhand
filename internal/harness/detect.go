@@ -11,6 +11,10 @@ import (
 
 const maxAncestorDepth = 8
 
+var processLookup = func(pid int) ([]byte, error) {
+	return exec.Command("ps", "-o", "ppid=,comm=,args=", "-p", strconv.Itoa(pid)).Output()
+}
+
 type Detection struct {
 	Name   string
 	Source string
@@ -63,7 +67,7 @@ func currentProcessAncestry(pid, depth int) []processInfo {
 		if pid <= 0 {
 			break
 		}
-		output, err := exec.Command("ps", "-o", "ppid=,comm=,args=", "-p", strconv.Itoa(pid)).Output()
+		output, err := processLookup(pid)
 		if err != nil {
 			break
 		}

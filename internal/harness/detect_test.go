@@ -1,7 +1,7 @@
 package harness
 
 import (
-	"os"
+	"fmt"
 	"testing"
 )
 
@@ -139,9 +139,21 @@ func TestDetectReturnsUnknownWithoutSignals(t *testing.T) {
 	}
 }
 
-func TestCurrentProcessAncestryIsBounded(t *testing.T) {
-	got := currentProcessAncestry(os.Getpid(), maxAncestorDepth)
-	if len(got) > maxAncestorDepth {
-		t.Fatalf("got %d ancestors, want at most %d", len(got), maxAncestorDepth)
+func TestCurrentProcessAncestryStopsAtDepth(t *testing.T) {
+	previousLookup := processLookup
+	t.Cleanup(func() { processLookup = previousLookup })
+
+	calls := 0
+	processLookup = func(pid int) ([]byte, error) {
+		calls++
+		return []byte(fmt.Sprintf("%d process-%d process-%d\n", pid+1, pid, pid)), nil
+	}
+
+	got := currentProcessAncestry(1, maxAncestorDepth)
+	if len(got) != maxAncestorDepth {
+		t.Fatalf("got %d ancestors, want %d", len(got), maxAncestorDepth)
+	}
+	if calls != maxAncestorDepth {
+		t.Fatalf("got %d lookups, want %d", calls, maxAncestorDepth)
 	}
 }
