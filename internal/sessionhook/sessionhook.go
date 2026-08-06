@@ -2,8 +2,10 @@
 package sessionhook
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +33,16 @@ func Remove(dir, exe string) (bool, error) {
 	}
 
 	var settings map[string]any
-	if err := json.Unmarshal(existing, &settings); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(existing))
+	decoder.UseNumber()
+	if err := decoder.Decode(&settings); err != nil {
+		return false, fmt.Errorf("parse %s: %w", relPath(), err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
 		return false, fmt.Errorf("parse %s: %w", relPath(), err)
 	}
 	if settings == nil {
@@ -86,6 +97,19 @@ func remove(settings map[string]any, exe string) (bool, error) {
 			command, ok := hook.(map[string]any)
 			if !ok {
 				return false, fmt.Errorf("%s: hooks.%s[%d].hooks[%d] is not an object, refusing to overwrite it", relPath(), event, i, j)
+			}
+			rawType, exists := command["type"]
+			if !exists {
+				filteredCommands = append(filteredCommands, hook)
+				continue
+			}
+			hookType, ok := rawType.(string)
+			if !ok {
+				return false, fmt.Errorf("%s: hooks.%s[%d].hooks[%d].type is not a string, refusing to overwrite it", relPath(), event, i, j)
+			}
+			if hookType != "command" {
+				filteredCommands = append(filteredCommands, hook)
+				continue
 			}
 			raw, exists := command["command"]
 			if !exists {

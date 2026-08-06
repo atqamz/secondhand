@@ -77,6 +77,29 @@ func TestRemoveDeletesOnlyOwnedHandHook(t *testing.T) {
 	}
 }
 
+func TestRemovePreservesNonCommandHooksWithAHandCommandField(t *testing.T) {
+	dir := mkHome(t)
+	prompt := map[string]any{"type": "prompt", "command": "hand session start", "prompt": "summarize"}
+	writeSettings(t, dir, map[string]any{"hooks": map[string]any{event: []any{map[string]any{"hooks": []any{
+		prompt,
+		map[string]any{"type": "command", "command": "/old/path/hand"},
+	}}}}})
+
+	changed, err := Remove(dir, "/new/path/hand")
+	if err != nil || !changed {
+		t.Fatalf("Remove = %v, %v, want only the command hook removed", changed, err)
+	}
+	events := readSettings(t, dir)["hooks"].(map[string]any)
+	matchers, ok := events[event].([]any)
+	if !ok || len(matchers) != 1 {
+		t.Fatalf("hooks = %+v, want the matcher containing the prompt hook preserved", events)
+	}
+	hooks := matchers[0].(map[string]any)["hooks"].([]any)
+	if len(hooks) != 1 || !reflect.DeepEqual(hooks[0], prompt) {
+		t.Fatalf("hooks = %+v, want the prompt hook preserved", hooks)
+	}
+}
+
 func TestRemoveLeavesAMissingSettingsFileAlone(t *testing.T) {
 	dir := mkHome(t)
 	changed, err := Remove(dir, "/opt/bin/hand")
@@ -117,6 +140,33 @@ func TestRemoveLeavesSettingsWithoutAnOwnedHookByteForByte(t *testing.T) {
 	}
 	if string(got) != string(body) || !info.ModTime().Equal(stamp) {
 		t.Fatalf("settings changed on a no-op removal: contents %q, mtime %v", got, info.ModTime())
+	}
+}
+
+func TestRemovePreservesLargeUnrelatedJSONNumbersExactly(t *testing.T) {
+	dir := mkHome(t)
+	path := filepath.Join(dir, settingsDir, settingsFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"permissions":{"limit":9007199254740993},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"hand session start"},{"type":"command","command":"/usr/bin/custom"}]}]}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Remove(dir, "/opt/bin/hand")
+	if err != nil || !changed {
+		t.Fatalf("Remove = %v, %v, want the owned hook removed", changed, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"limit": 9007199254740993`) {
+		t.Fatalf("settings = %s, want the unrelated large integer preserved exactly", raw)
+	}
+	if strings.Contains(string(raw), "hand session start") {
+		t.Fatalf("settings = %s, want the owned hook removed", raw)
 	}
 }
 
@@ -260,6 +310,7 @@ func TestRemoveRefusesSettingsOfAnUnexpectedShape(t *testing.T) {
 		{"a matcher is not an object", `{"hooks": {"SessionStart": ["startup"]}}`},
 		{"matcher hooks is not an array", `{"hooks": {"SessionStart": [{"hooks": {"command": "hand"}}]}}`},
 		{"a nested hook is not an object", `{"hooks": {"SessionStart": [{"hooks": ["hand"]}]}}`},
+		{"a hook type is not a string", `{"hooks": {"SessionStart": [{"hooks": [{"type": 1, "command": "hand"}]}]}}`},
 		{"a command is not a string", `{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": 1}]}]}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
