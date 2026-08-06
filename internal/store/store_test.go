@@ -1,11 +1,13 @@
 package store
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -495,4 +497,135 @@ func TestOpenReadOnlyReadsCurrentRowsAndRefusesWrites(t *testing.T) {
 	if string(after) != string(before) {
 		t.Fatal("OpenReadOnly changed the database bytes")
 	}
+}
+
+func TestOpenReadOnlyMissingDatabaseDoesNotCreateState(t *testing.T) {
+	home := t.TempDir()
+	before := snapshotStoreTree(t, home)
+	db, err := OpenReadOnly(home)
+	if db != nil {
+		_ = db.Close()
+	}
+	if err == nil {
+		t.Fatal("OpenReadOnly created or opened a missing database")
+	}
+	if after := snapshotStoreTree(t, home); !slices.Equal(after, before) {
+		t.Fatalf("missing-database open changed the fleet:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func TestOpenReadOnlyRefusesOlderSchemaWithExactRecoveryAndNoMutation(t *testing.T) {
+	db, home := openTemp(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	setStoreSchemaVersion(t, home, len(migrations)-1)
+	before := snapshotStoreTree(t, home)
+
+	db, err := OpenReadOnly(home)
+	if db != nil {
+		_ = db.Close()
+	}
+	if err == nil {
+		t.Fatal("OpenReadOnly accepted an older schema")
+	}
+	remedy := "hand init '" + home + "'"
+	if !strings.Contains(err.Error(), remedy) || strings.Contains(err.Error(), "hand update") {
+		t.Fatalf("err = %q, want only exact recovery %q", err, remedy)
+	}
+	if after := snapshotStoreTree(t, home); !slices.Equal(after, before) {
+		t.Fatalf("older-schema refusal changed the fleet:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func TestOpenReadOnlyRefusesNewerSchemaWithoutMutation(t *testing.T) {
+	db, home := openTemp(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	setStoreSchemaVersion(t, home, len(migrations)+1)
+	before := snapshotStoreTree(t, home)
+
+	db, err := OpenReadOnly(home)
+	if db != nil {
+		_ = db.Close()
+	}
+	if !errors.Is(err, ErrSchemaNewer) {
+		t.Fatalf("OpenReadOnly error = %v, want ErrSchemaNewer", err)
+	}
+	if after := snapshotStoreTree(t, home); !slices.Equal(after, before) {
+		t.Fatalf("newer-schema refusal changed the fleet:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func TestOpenReadOnlyHandlesURISpecialFleetPathWithoutMutation(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "fleet 100%#a?b")
+	db, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WriteTask(sampleTask()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotStoreTree(t, home)
+
+	db, err = OpenReadOnly(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := db.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != sampleTask().ID {
+		t.Fatalf("ListTasks = %+v, want the current row", tasks)
+	}
+	if after := snapshotStoreTree(t, home); !slices.Equal(after, before) {
+		t.Fatalf("URI-special read changed the fleet:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func setStoreSchemaVersion(t *testing.T, home string, version int) {
+	t.Helper()
+	db, err := open(Path(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func snapshotStoreTree(t *testing.T, root string) []string {
+	t.Helper()
+	var snapshot []string
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entry := rel + " " + info.Mode().String()
+		if info.Mode().IsRegular() {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			entry += fmt.Sprintf(" %x", sha256.Sum256(contents))
+		}
+		snapshot = append(snapshot, entry)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }

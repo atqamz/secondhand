@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atqamz/secondhand/internal/shellquote"
 	_ "modernc.org/sqlite"
 )
 
@@ -275,7 +276,7 @@ func OpenReadOnly(homeDir string) (*DB, error) {
 	}
 	if current < latest {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("state/hand.db is schema version %d, older than this build of hand requires (version %d) - run hand init or hand update before opening it read-only", current, latest)
+		return nil, fmt.Errorf("state/hand.db is schema version %d, older than this build of hand requires (version %d) - run `hand init %s` before opening it read-only", current, latest, shellquote.Quote(homeDir))
 	}
 	return db, nil
 }

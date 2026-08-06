@@ -10,8 +10,8 @@ import (
 
 	"github.com/atqamz/secondhand/internal/agentsmd"
 	"github.com/atqamz/secondhand/internal/axi"
+	"github.com/atqamz/secondhand/internal/project"
 	"github.com/atqamz/secondhand/internal/sessionhook"
-	"github.com/atqamz/secondhand/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -198,15 +198,13 @@ func initSkeletonFiles(home string) error {
 	return errors.Join(errs...)
 }
 
-// Creates state/hand.db up front so home.IsHome's marker exists as soon as init returns, rather than
-// waiting for the first command that happens to touch machine state. store.Open is safe to call
-// repeatedly.
+// Creates or upgrades machine state up front so init is the explicit boundary for schema,
+// legacy task, and legacy project migrations. The composed operation is idempotent.
 func initMarker(home string) error {
-	db, err := store.Open(home)
-	if err != nil {
+	if err := project.Migrate(home); err != nil {
 		return fmt.Errorf("create state/hand.db: %w", err)
 	}
-	return db.Close()
+	return nil
 }
 
 func resolveInitHome(cwd string, args []string) (string, error) {

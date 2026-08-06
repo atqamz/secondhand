@@ -62,6 +62,16 @@ func ListReadOnly(homeDir string) ([]Project, error) {
 	return db.ListProjects()
 }
 
+// Runs schema, legacy task, and legacy registry migrations through their existing
+// ordered opener, leaving presentation readers free to stay strictly read-only.
+func Migrate(homeDir string) error {
+	db, err := openRegistry(homeDir)
+	if err != nil {
+		return err
+	}
+	return db.Close()
+}
+
 // data/projects.md survives its own import as the projection, so its absence
 // cannot serve as the done marker the way a task's JSON file does.
 const legacyRegistryKey = "projects.md"

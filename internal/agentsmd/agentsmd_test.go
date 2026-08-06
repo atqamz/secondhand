@@ -557,7 +557,7 @@ func TestCheckFlagsMissingGeneratedMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasViolation(violations, "no hand:generated markers") {
-		t.Fatalf("got %v, want a missing-markers violation: Refresh declines to touch this file, so doctor must fail it", violations)
+		t.Fatalf("got %v, want a missing-markers violation before Refresh establishes managed-block ownership", violations)
 	}
 	if hasViolation(violations, "generated block has drifted") {
 		t.Fatalf("got %v, want no drift violation when there is no block to drift", violations)
