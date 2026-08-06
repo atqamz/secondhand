@@ -27,3 +27,6 @@ Thumbs.db
 
 # worktree tooling
 treehouse.toml
+
+# etc
+.superpowers/

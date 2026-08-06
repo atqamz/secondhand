@@ -109,6 +109,9 @@ func importLegacyRegistry(db *store.DB, homeDir string) error {
 	if err != nil {
 		return err
 	}
+	if len(projects) == 0 {
+		return nil
+	}
 	for _, p := range projects {
 		// A name listed twice was already unreachable past the first match, so
 		// dropping the later one imports exactly what the file resolved to.
