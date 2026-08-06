@@ -26,7 +26,7 @@ func newRootCmd(version string) *cobra.Command {
 						return err
 					}
 				}
-				if cmd.Name() != "update" {
+				if cmd.Name() != "update" && !readOnlyOverview {
 					if notice := selfupdate.CheckNotice(fleetHome, selfupdate.Repo, version); notice != "" {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), notice)
 					}

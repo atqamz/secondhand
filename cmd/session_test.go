@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/state"
@@ -39,16 +40,23 @@ func writeSessionContext(t *testing.T, home, operator, backlog string) {
 
 func executeSessionStart(t *testing.T, in io.Reader) (string, error) {
 	t.Helper()
-	root := newRootCmd("test")
-	root.SetArgs([]string{"session", "start"})
+	out, _, err := executeRootForTest(t, "test", in, "session", "start")
+	return out, err
+}
+
+func executeRootForTest(t *testing.T, version string, in io.Reader, args ...string) (string, string, error) {
+	t.Helper()
+	root := newRootCmd(version)
+	root.SetArgs(args)
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	root.SetOut(&out)
-	root.SetErr(new(bytes.Buffer))
+	root.SetErr(&errOut)
 	if in != nil {
 		root.SetIn(in)
 	}
 	_, err := root.ExecuteC()
-	return out.String(), err
+	return out.String(), errOut.String(), err
 }
 
 func runSessionStartForTest(t *testing.T) string {
@@ -210,6 +218,62 @@ func TestSessionOverviewsDoNotMigrateLegacyConfig(t *testing.T) {
 	assertUnmigrated()
 	runBareRoot(t)
 	assertUnmigrated()
+}
+
+func writeFreshVersionCheck(t *testing.T, home string) {
+	t.Helper()
+	contents := `{"checked_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","latest":"v9.0.0"}`
+	if err := os.WriteFile(filepath.Join(home, "state", ".version-check"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionOverviewsSkipReleasedVersionCheck(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{"session start", []string{"session", "start"}},
+		{"bare hand", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := setupSessionHome(t)
+			writeFreshVersionCheck(t, home)
+
+			_, errOut, err := executeRootForTest(t, "v0.1.0", nil, test.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(errOut, "A new version of hand is available") {
+				t.Fatalf("stderr = %q, want the read-only overview to skip the version-check path", errOut)
+			}
+		})
+	}
+}
+
+func TestSessionStartWorkerRefusalPrecedesReleasedVersionCheck(t *testing.T) {
+	home := setupSessionHome(t)
+	writeFreshVersionCheck(t, home)
+	t.Setenv(harness.RoleEnv, harness.WorkerRole)
+
+	_, errOut, err := executeRootForTest(t, "v0.1.0", nil, "session", "start")
+	assertExitCode(t, err, 3)
+	if errOut != "" {
+		t.Fatalf("stderr before worker refusal = %q, want no version-check output", errOut)
+	}
+}
+
+func TestNormalCommandKeepsReleasedVersionNotice(t *testing.T) {
+	home := setupSessionHome(t)
+	writeFreshVersionCheck(t, home)
+
+	_, errOut, err := executeRootForTest(t, "v0.1.0", nil, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "A new version of hand is available: v0.1.0 -> v9.0.0") {
+		t.Fatalf("stderr = %q, want normal commands to retain the released-version notice", errOut)
+	}
 }
 
 func TestReadBacklogSummaryBoundsIdentityLinesAndCountsTheWholeQueue(t *testing.T) {
