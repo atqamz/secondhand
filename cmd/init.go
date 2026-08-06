@@ -106,7 +106,14 @@ func newInitCmd() *cobra.Command {
 			}
 			appendWorkerConfig(&doc, cfg)
 			doc.List("missing_tools", missingTools())
-			doc.Help("Start a supervising session in this home; it detects the current harness and uses its native model and effort defaults",
+			effectiveSettingsHelp := "Start a supervising session in this home; no supported worker harness is configured or detected, so it reports the unanswered harness choice"
+			switch cfg.settings[0].state {
+			case stateConfigured:
+				effectiveSettingsHelp = "Start a supervising session in this home; it uses the configured worker harness and any explicit model or effort overrides, with native defaults where unset"
+			case stateDetected:
+				effectiveSettingsHelp = "Start a supervising session in this home; it detects the current harness and uses its native model and effort defaults"
+			}
+			doc.Help(effectiveSettingsHelp,
 				"Run `hand config set <key> <value>` only to persist an explicit worker override",
 				"Read AGENTS.md in this home for how a supervising agent is meant to drive it",
 				"Run `hand project add <repo-url>` to register the first project",

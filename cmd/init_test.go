@@ -178,6 +178,58 @@ func TestInitWritesNoWorkerOverrideAndReportsEffectiveDefaults(t *testing.T) {
 	}
 }
 
+func TestInitHelpDescribesConfiguredAndUnknownEffectiveSettings(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		detected   string
+		configured string
+		want       string
+		unwant     string
+	}{
+		{
+			name:       "configured",
+			detected:   harness.Codex,
+			configured: harness.Claude,
+			want:       "uses the configured worker harness and any explicit model or effort overrides",
+			unwant:     "detects the current harness",
+		},
+		{
+			name:     "unknown",
+			detected: "unknown",
+			want:     "no supported worker harness is configured or detected",
+			unwant:   "uses its native model and effort defaults",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAND_HOME", "")
+			t.Setenv("HAND_HARNESS", test.detected)
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if test.configured != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config", "harness"), []byte(test.configured+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := newInitCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), test.want) {
+				t.Fatalf("init output = %q, want %q", out.String(), test.want)
+			}
+			if strings.Contains(out.String(), test.unwant) {
+				t.Fatalf("init output = %q, do not want %q for %s settings", out.String(), test.unwant, test.name)
+			}
+		})
+	}
+}
+
 // The retired flag has to fail loudly rather than be silently accepted, so a script still passing it
 // is told the configuration moved instead of appearing to have set something.
 func TestInitRefusesTheRetiredSetupFlag(t *testing.T) {

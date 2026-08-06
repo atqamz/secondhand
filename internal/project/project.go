@@ -53,6 +53,15 @@ func List(homeDir string) ([]Project, error) {
 	return db.ListProjects()
 }
 
+func ListReadOnly(homeDir string) ([]Project, error) {
+	db, err := store.OpenReadOnly(homeDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	return db.ListProjects()
+}
+
 // data/projects.md survives its own import as the projection, so its absence
 // cannot serve as the done marker the way a task's JSON file does.
 const legacyRegistryKey = "projects.md"

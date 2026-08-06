@@ -263,7 +263,7 @@ func gateRunIssue(home string, t state.Task, reportedDone bool, p project.Projec
 }
 
 func runStatusFleet(cmd *cobra.Command, home string, client *herdr.Client, asJSON bool, cols []axi.Column[taskView]) error {
-	views, holds, err := fleetViews(cmd, home, client)
+	views, holds, err := fleetViews(cmd, home, client, false)
 	if err != nil {
 		return err
 	}
@@ -312,21 +312,29 @@ func appendFleetState(doc *axi.Doc, views []taskView, holds []state.Hold, cols [
 	return attention
 }
 
-func fleetViews(cmd *cobra.Command, home string, client *herdr.Client) ([]taskView, []state.Hold, error) {
-	tasks, err := state.List(home)
+func fleetViews(cmd *cobra.Command, home string, client *herdr.Client, readOnly bool) ([]taskView, []state.Hold, error) {
+	listTasks := state.List
+	listHolds := state.ListHolds
+	listProjects := project.List
+	if readOnly {
+		listTasks = state.ListReadOnly
+		listHolds = state.ListHoldsReadOnly
+		listProjects = project.ListReadOnly
+	}
+	tasks, err := listTasks(home)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Propagated rather than degraded to an empty list: a store fault reading
 	// as no holds is exactly the false all-clear this feature exists to avoid.
-	holds, err := state.ListHolds(home)
+	holds, err := listHolds(home)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Best-effort, like project.List elsewhere in this fleet view: a registry read fault degrades every
+	// Best-effort, like the project registry read elsewhere in this fleet view: a fault degrades every
 	// task's gate-run check to silent rather than failing the whole fleet overview over it.
-	projects, projectsErr := project.List(home)
+	projects, projectsErr := listProjects(home)
 	if projectsErr != nil {
 		// Named on stderr all the same - silently dropping every (gate: ...) marker fleet-wide would render
 		// an ungated PR as clean, the false all-clear this feature exists to avoid.

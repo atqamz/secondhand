@@ -130,6 +130,15 @@ func List(homeDir string) ([]Task, error) {
 	return db.ListTasks()
 }
 
+func ListReadOnly(homeDir string) ([]Task, error) {
+	db, err := store.OpenReadOnly(homeDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	return db.ListTasks()
+}
+
 // Delete removes a task's row along with its report channel at state/<id>.status, leaving
 // the durable deliverables in data/<id>/. That file is the volatile wake log: a respawn
 // under a used ID starts at report_offset 0, so a surviving log replays as new lines.

@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +24,9 @@ func setupSessionHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	mkFleetDirs(t, home)
+	if err := initMarker(home); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(home)
 	t.Setenv("HAND_HARNESS", harness.Codex)
 	t.Setenv(harness.RoleEnv, "")
@@ -257,6 +264,115 @@ func TestSessionOverviewsDoNotMigrateLegacyConfig(t *testing.T) {
 	assertUnmigrated()
 	runBareRoot(t)
 	assertUnmigrated()
+}
+
+func TestSessionOverviewsDoNotMutateFleetState(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{"session start", []string{"session", "start"}},
+		{"bare hand", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := initLayout(home); err != nil {
+				t.Fatal(err)
+			}
+			if err := initMarker(home); err != nil {
+				t.Fatal(err)
+			}
+			writeSessionContext(t, home, "operator", "# Backlog\n")
+			t.Setenv("HAND_HOME", home)
+			t.Setenv("HAND_HARNESS", harness.Codex)
+			t.Setenv(harness.RoleEnv, "")
+
+			db, err := store.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AddProject(store.Project{Name: "sqlite-project", URL: "local", Mode: "local-only"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.WriteTask(store.Task{ID: "sqlite-task", Project: "sqlite-project", Kind: store.KindShip}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SetHold(store.Hold{ID: "sqlite-hold", Kind: store.HoldKindOperator, Reason: "waiting"}); err != nil {
+				t.Fatal(err)
+			}
+			migrated, err := db.Migrated("projects.md")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if migrated {
+				t.Fatal("fresh initialized home already has the project migration marker")
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := os.WriteFile(filepath.Join(home, "data", "projects.md"),
+				[]byte("# Projects\n\n- legacy-project: local mode=local-only\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			legacyTask, err := json.Marshal(store.Task{ID: "legacy-task", Project: "legacy-project", Kind: store.KindShip})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, "state", "legacy-task.json"), legacyTask, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			before := snapshotFleetTree(t, home)
+			out, _, err := executeRootForTest(t, "test", nil, test.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"sqlite-project", "sqlite-task", "sqlite-hold"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("out = %q, want current SQLite-backed %q", out, want)
+				}
+			}
+			after := snapshotFleetTree(t, home)
+			if !slices.Equal(after, before) {
+				t.Fatalf("fleet tree changed:\nbefore: %v\nafter:  %v", before, after)
+			}
+		})
+	}
+}
+
+func snapshotFleetTree(t *testing.T, root string) []string {
+	t.Helper()
+	var snapshot []string
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entry := rel + " " + info.Mode().String()
+		switch {
+		case info.Mode().IsRegular():
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			entry += fmt.Sprintf(" %x", sha256.Sum256(contents))
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			entry += " -> " + target
+		}
+		snapshot = append(snapshot, entry)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func writeFreshVersionCheck(t *testing.T, home string) {

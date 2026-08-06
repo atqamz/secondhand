@@ -457,3 +457,42 @@ func TestOpenHandlesAHomePathWithURISyntaxInIt(t *testing.T) {
 		t.Fatalf("stat %s: %v, want the database inside the home", Path(home), err)
 	}
 }
+
+func TestOpenReadOnlyReadsCurrentRowsAndRefusesWrites(t *testing.T) {
+	db, home := openTemp(t)
+	if err := db.WriteTask(sampleTask()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(Path(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = OpenReadOnly(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := db.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != sampleTask().ID {
+		t.Fatalf("ListTasks = %+v, want the current SQLite row", tasks)
+	}
+	if err := db.WriteTask(Task{ID: "must-not-write"}); err == nil {
+		t.Fatal("WriteTask through OpenReadOnly succeeded")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(Path(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("OpenReadOnly changed the database bytes")
+	}
+}

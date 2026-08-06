@@ -70,7 +70,7 @@ func renderSessionOverview(cmd *cobra.Command, version, fleetHome string) error 
 	if err != nil {
 		return sessionContextError(fleetHome, backlogPath, err)
 	}
-	projects, err := project.List(fleetHome)
+	projects, err := project.ListReadOnly(fleetHome)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func renderSessionOverview(cmd *cobra.Command, version, fleetHome string) error 
 	if err != nil {
 		return err
 	}
-	views, holds, err := fleetViews(cmd, fleetHome, herdr.NewClient())
+	views, holds, err := fleetViews(cmd, fleetHome, herdr.NewClient(), true)
 	if err != nil {
 		return err
 	}

@@ -90,3 +90,12 @@ func ListHolds(homeDir string) ([]Hold, error) {
 	defer func() { _ = db.Close() }()
 	return db.ListHolds()
 }
+
+func ListHoldsReadOnly(homeDir string) ([]Hold, error) {
+	db, err := store.OpenReadOnly(homeDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	return db.ListHolds()
+}
