@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,12 +144,50 @@ func TestSessionStartMissingRequiredContextNamesPathAndRecovery(t *testing.T) {
 
 			_, err := executeSessionStart(t, nil)
 			assertExitCode(t, err, 3)
-			for _, want := range []string{path, "hand init " + home} {
+			for _, want := range []string{path, "hand init '" + home + "'"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("err = %q, want %q", err, want)
 				}
 			}
 		})
+	}
+}
+
+func TestSessionStartRecoveryCommandQuotesFleetHomeForPOSIXShell(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, "fleet path's `printf injected`;printf injected")
+	mkFleetDirs(t, home)
+	writeSessionContext(t, home, "operator", "# Backlog\n")
+	if err := os.Remove(filepath.Join(home, "data", "operator.md")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAND_HOME", home)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+	t.Setenv(harness.RoleEnv, "")
+	t.Chdir(parent)
+
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "hand"), []byte("#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := executeSessionStart(t, nil)
+	assertExitCode(t, err, 3)
+	message := err.Error()
+	start := strings.LastIndex(message, "; run `")
+	end := strings.LastIndex(message, "` to restore it")
+	if start < 0 || end <= start {
+		t.Fatalf("err = %q, want an executable recovery command", message)
+	}
+	recovery := message[start+len("; run `") : end]
+	got, runErr := exec.Command("sh", "-c", recovery).CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("run recovery %q: %v: %s", recovery, runErr, got)
+	}
+	want := "2\ninit\n" + home + "\n"
+	if string(got) != want {
+		t.Fatalf("recovery argv = %q, want %q", got, want)
 	}
 }
 

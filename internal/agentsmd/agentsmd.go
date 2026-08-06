@@ -12,6 +12,7 @@ import (
 
 	"github.com/atqamz/secondhand/internal/atomicfile"
 	"github.com/atqamz/secondhand/internal/home"
+	"github.com/atqamz/secondhand/internal/shellquote"
 )
 
 const (
@@ -192,7 +193,7 @@ var (
 
 // Severity distinguishes a Violation that fails hand doctor from one that is
 // informational: real and worth a human's attention, but not something the checker can
-// resolve into a pass/fail verdict on its own. Absent markers are the only case so far.
+// resolve into a pass/fail verdict on its own.
 type Severity int
 
 const (
@@ -210,7 +211,7 @@ type Violation struct {
 }
 
 // Check reports perishable content, malformed fences, and generated-block drift or absence without
-// fixing any of it. A nil result with no error means no fleet home or no file.
+// fixing any of it. A nil result with no error means the directory is not a fleet home.
 func Check(dir string) ([]Violation, error) {
 	isHome, err := home.IsHome(dir)
 	if err != nil {
@@ -222,7 +223,7 @@ func Check(dir string) ([]Violation, error) {
 
 	data, err := os.ReadFile(filepath.Join(dir, filename))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return []Violation{{Text: fmt.Sprintf("AGENTS.md is missing: run hand init %s to restore the current generated block", shellquote.Quote(dir))}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", filename, err)
@@ -236,8 +237,7 @@ func Check(dir string) ([]Violation, error) {
 	switch {
 	case len(startOffsets) == 0 && len(endOffsets) == 0:
 		violations = append(violations, Violation{
-			Text:     fmt.Sprintf("no hand:generated markers: run hand init %s to append the current generated block", dir),
-			Severity: SeverityInfo,
+			Text: fmt.Sprintf("no hand:generated markers: run hand init %s to append the current generated block", shellquote.Quote(dir)),
 		})
 	case len(startOffsets) == 0:
 		for _, offset := range endOffsets {
@@ -299,7 +299,7 @@ func Check(dir string) ([]Violation, error) {
 	}
 
 	if hasBlock && content[blockStart:blockEnd] != strings.TrimSuffix(generatedBlock(), "\n") {
-		violations = append(violations, Violation{Text: fmt.Sprintf("generated block has drifted from generatedBody: run hand init %s to refresh", dir)})
+		violations = append(violations, Violation{Text: fmt.Sprintf("generated block has drifted from generatedBody: run hand init %s to refresh", shellquote.Quote(dir))})
 	}
 
 	return violations, nil

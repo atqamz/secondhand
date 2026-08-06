@@ -456,6 +456,55 @@ func TestUpdateReportsVersionsWhenAgentsRefreshFails(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesOwnedSessionHookWhenAgentsRefreshFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("update binary layout targets unix asset names")
+	}
+	setFakeExecutable(t)
+	home := t.TempDir()
+	t.Chdir(home)
+	mkFleetDirs(t, home)
+	malformed := "<!-- hand:generated:start -->\n<!-- hand:generated:start -->\n<!-- hand:generated:end -->\n"
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(malformed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeOwnedSessionHook(t, home)
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := buildUpdateFixture(t, []byte("new binary contents"))
+	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
+
+	cmd := newUpdateCmd("v0.1.0")
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("got %v, want a successful binary update despite the refresh failure", err)
+	}
+
+	if want := appliedUpdateDoc("failed", "unchanged", "fixed the frobnicator"); out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+	if !strings.Contains(errOut.String(), "warning: refresh AGENTS.md:") {
+		t.Fatalf("stderr = %q, want the refresh warning", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "retire the session hook") {
+		t.Fatalf("stderr = %q, want no retirement attempt after refresh failed", errOut.String())
+	}
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("settings changed after refresh failure:\n got %s\nwant %s", after, before)
+	}
+}
+
 // The binary is already replaced before retirement runs, so malformed operator
 // settings produce a warning and a failed field without changing update success.
 func TestUpdateReportsVersionsWhenSessionHookRetirementFails(t *testing.T) {

@@ -2,6 +2,7 @@ package agentsmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -345,7 +346,7 @@ func hasViolation(violations []Violation, substr string) bool {
 	return false
 }
 
-func TestCheckSkipsNonFleetHomeAndMissingFile(t *testing.T) {
+func TestCheckSkipsNonFleetHome(t *testing.T) {
 	violations, err := Check(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -353,14 +354,19 @@ func TestCheckSkipsNonFleetHomeAndMissingFile(t *testing.T) {
 	if violations != nil {
 		t.Fatalf("got %v, want nil outside a fleet home", violations)
 	}
+}
 
+func TestCheckFlagsMissingAgentsFile(t *testing.T) {
 	dir := makeWorkspace(t)
-	violations, err = Check(dir)
+	violations, err := Check(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if violations != nil {
-		t.Fatalf("got %v, want nil when AGENTS.md does not exist yet", violations)
+	if len(violations) != 1 || !hasViolation(violations, "AGENTS.md is missing") {
+		t.Fatalf("got %v, want one missing-file violation", violations)
+	}
+	if violations[0].Severity != SeverityViolation {
+		t.Fatalf("got severity %v, want SeverityViolation", violations[0].Severity)
 	}
 }
 
@@ -535,7 +541,7 @@ func TestCheckFlagsGeneratedBlockDrift(t *testing.T) {
 	}
 	// A bare "run hand init" would target the operator's working directory,
 	// which is a new nested fleet home whenever that is not the home itself.
-	if !hasViolation(violations, "run hand init "+dir+" to refresh") {
+	if !hasViolation(violations, "run hand init '"+dir+"' to refresh") {
 		t.Fatalf("got %v, want the remedy to name the resolved home %q", violations, dir)
 	}
 }
@@ -557,10 +563,76 @@ func TestCheckFlagsMissingGeneratedMarkers(t *testing.T) {
 		t.Fatalf("got %v, want no drift violation when there is no block to drift", violations)
 	}
 	for _, v := range violations {
-		if strings.Contains(v.Text, "no hand:generated markers") && v.Severity != SeverityInfo {
-			t.Fatalf("got severity %v for the missing-markers finding, want SeverityInfo: Check cannot tell an accidental marker-less file from a deliberate one", v.Severity)
+		if strings.Contains(v.Text, "no hand:generated markers") && v.Severity != SeverityViolation {
+			t.Fatalf("got severity %v for the missing-markers finding, want SeverityViolation", v.Severity)
 		}
 	}
+}
+
+func TestCheckRemediationCommandsQuoteFleetHomeForPOSIXShell(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "fleet path's `printf injected`;printf injected")
+	for _, subdir := range []string{"data", "state"} {
+		if err := os.MkdirAll(filepath.Join(dir, subdir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state", "hand.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "hand"), []byte("#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assertRecovery := func(finding string) {
+		t.Helper()
+		violations, err := Check(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, violation := range violations {
+			if !strings.Contains(violation.Text, finding) {
+				continue
+			}
+			start := strings.Index(violation.Text, "run ")
+			end := strings.LastIndex(violation.Text, " to ")
+			if start < 0 || end <= start {
+				t.Fatalf("finding = %q, want an executable recovery command", violation.Text)
+			}
+			recovery := violation.Text[start+len("run ") : end]
+			got, runErr := exec.Command("sh", "-c", recovery).CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("run recovery %q: %v: %s", recovery, runErr, got)
+			}
+			want := "2\ninit\n" + dir + "\n"
+			if string(got) != want {
+				t.Fatalf("recovery argv = %q, want %q", got, want)
+			}
+			return
+		}
+		t.Fatalf("violations = %v, want finding %q", violations, finding)
+	}
+
+	assertRecovery("AGENTS.md is missing")
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte("# Hand-written, no markers\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertRecovery("no hand:generated markers")
+	if _, err := Refresh(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, filename)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := strings.Replace(string(content), "hand session start", "hand session begin", 1)
+	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertRecovery("generated block has drifted")
 }
 
 func TestCheckFlagsUnterminatedFence(t *testing.T) {

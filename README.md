@@ -21,8 +21,9 @@ hand init
 `hand init` asks nothing.
 It creates runtime directories, skeleton files, and a managed instruction block in `AGENTS.md`, with a `CLAUDE.md` symlink when that name is absent.
 The instructions make every supported supervising harness run `hand session start`, which loads the current fleet context and reports the first next action.
-That session can register a project with `hand project add <repo-url>` and persists any explicit worker overrides with `hand config set <key> <value>`.
-Nothing is guessed on your behalf, so a fleet home is never configured with a value you did not choose.
+That session uses the detected supervisor harness for workers and leaves model and effort selection to that harness's native defaults.
+It can register a project with `hand project add <repo-url>`; `hand config set <key> <value>` is only for an explicit persisted worker override.
+Detected and native values are effective defaults, not configuration written on your behalf.
 
 A fleet home is a plain directory, anywhere on disk, unrelated to any project's own repo.
 `hand init` never places a `hand` binary in it, so install `hand` on `PATH` first.
@@ -47,7 +48,7 @@ Set `HAND_HOME` to run `hand` from outside the fleet home, for example from a sc
 - **treehouse worktrees**: workers operate in isolated git checkouts acquired from a treehouse pool, never in the project clone itself.
 - **Backlog**: `data/backlog.md` is a plain markdown task queue, read and edited directly by the supervisory agent. Finished entries roll off into `data/done-archive.md`, dropped ones into `data/note-archive.md`.
 - **Operator context and learnings**: `data/operator.md` is written by the operator for the agent to read first - identity, authority, hard constraints - and `data/learnings.md` is the agent's own curated record of operational facts that cost real time to discover. The agent reads `data/operator.md` and never rewrites it, which is what lets its constraints outrank the agent's judgment. `hand init` seeds both, `hand update` seeds whichever an older home is missing, and neither ever overwrites one that exists; nothing under `data/` is maintained by hand for the operator to read, since `hand status` and the issue tracker are their view of the fleet.
-- **Supervisor bootstrap**: `hand init` and `hand update` maintain one small `AGENTS.md` block that tells a supervising harness to run `hand session start` and load bounded startup context. Claude reads the same contract through `CLAUDE.md`; worker sessions are explicitly excluded.
+- **Supervisor bootstrap**: `hand init` and `hand update` maintain one small `AGENTS.md` block that tells a supervising harness to run `hand session start` and load bounded startup context without reading stdin. Claude reads the same contract through `CLAUDE.md`. A process marked `HAND_ROLE=worker` is refused before context is read; a supervisor run may still apply state-store migrations while opening machine state.
 - **Agent-shaped output**: every command prints TOON on stdout - `key: value` fields, `name[N]{f1,f2}:` row blocks with pre-computed aggregates above them, and a `help[N]:` list of what to run next - because the consumer is an LLM agent rather than a human terminal, with `hand watch`'s per-line event stream as the one exception. `--fields` narrows a row block to the columns you name, `--json` retains its existing object, and a failure renders its own document on stderr carrying `error`, `kind` and `exit` so a caller branches on a word instead of a number.
 - **Machine state vs. the prose corpus**: machine state - tasks, PR state, pane ids, the project registry, holds - is authoritative in sqlite at `state/hand.db`. The prose under `data/` stays authoritative in files, with a derived full-text index at `state/index.db` that `hand search` reads and that is safe to delete at any time. When the database and a `state/<id>.status` file disagree about what a worker said, believe the file: it is readable without a working `hand`, which is what recovery has actually needed.
 
@@ -55,9 +56,10 @@ Set `HAND_HOME` to run `hand` from outside the fleet home, for example from a sc
 
 | Command | Description | Status |
 | --- | --- | --- |
-| `hand` | With no subcommand: name the binary that answered, its version and the fleet home it resolved, followed by the fleet overview `hand status` prints | Available |
-| `hand init` | Initialize runtime directories, skeleton files and the managed supervisor instructions; asks nothing and chooses no worker default | Available |
-| `hand config` | Report the fleet's worker defaults and which of them are still missing; `hand config set <key> <value>` validates and persists one | Available |
+| `hand` | With no subcommand in a fleet home: render the same supervisor startup digest as `hand session start`; outside one, report the binary, version and how to initialize a home | Available |
+| `hand init` | Initialize runtime directories, skeleton files and the managed supervisor instructions; asks nothing and persists no worker override | Available |
+| `hand config` | Report the effective detected/native worker defaults and optional persisted overrides; `hand config set <key> <value>` validates and persists one override | Available |
+| `hand session start` | Canonical supervisor startup: load bounded fleet context and choose the next action; refuses `HAND_ROLE=worker` before reading context and never reads stdin | Available |
 | `hand project add` | Clone and register a repository | Available |
 | `hand project list` | List registered projects | Available |
 | `hand project remove` | Unregister a project, keeping its clone | Available |
@@ -167,21 +169,21 @@ Builds without an embedded version never print the notice.
 
 ## Configuration
 
-Preferences live as plain files under `config/`, one value per file.
-
-The three worker defaults - `harness`, `model` and `effort` - are owned by `hand config`, which validates a value and writes it atomically:
+Optional worker overrides live as plain files under `config/`, one value per file.
+`hand config` reports three effective settings - `harness`, `model` and `effort` - and validates any override before writing it atomically:
 
 ```sh
-hand config                             # what is set, what is missing, what each harness can carry
+hand config                             # effective defaults, optional overrides and harness capabilities
 hand config set harness claude
 hand config set model claude-opus-5
 ```
 
-The harness comes first because it decides whether the other two exist at all: `hand config` reports `model` and `effort` as `pending-harness` until one is chosen, then as `unsupported` for a harness that takes no such launch flag, and `hand config set` refuses to write one rather than storing a value nothing can dispatch.
-`model` and `effort` are stored per harness (`config/model.claude`), so switching harnesses re-asks instead of handing a worker an identifier chosen for a different tool.
+Without `config/harness`, workers inherit the detected supervisor harness. Applicable but unset model and effort values stay with that harness's native defaults; a harness with no such launch flag reports them as `unsupported`.
+Only when no supported harness can be detected is the harness `missing`, with model and effort `pending-harness` until that one choice is supplied.
+Persisted model and effort overrides are stored per harness (`config/model.claude`), so switching harnesses never hands a worker an identifier chosen for a different tool.
 
-Nothing sets these for you.
-`hand init` reports their state, every supervising session's opening document repeats the report, and the answer is yours to give in that session - the fleet home's own `AGENTS.md` carries the instructions the agent follows to ask.
+`hand init` writes none of these overrides.
+It reports the effective states, and every `hand session start` repeats them so an operator can add an override when one is actually wanted.
 
 A brief can start with a `---` fenced block declaring `model` and `effort` for one task. Those values win over fleet defaults and lose only to a `hand spawn` or `hand promote` flag.
 

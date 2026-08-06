@@ -65,9 +65,11 @@ func newUpdateCmd(version string) *cobra.Command {
 				seedErr = initLayout(fleetHome)
 				// Generated instructions supersede the Claude-only hook, so an
 				// update retires Secondhand's command without touching others.
-				var exe string
-				if exe, hookErr = os.Executable(); hookErr == nil {
-					hookRemoved, hookErr = sessionhook.Remove(fleetHome, exe)
+				if refreshErr == nil {
+					var exe string
+					if exe, hookErr = os.Executable(); hookErr == nil {
+						hookRemoved, hookErr = sessionhook.Remove(fleetHome, exe)
+					}
 				}
 			case errors.Is(refreshErr, home.ErrNotFound):
 				refreshErr = nil

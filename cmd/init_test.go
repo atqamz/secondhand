@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/home"
 )
 
@@ -139,11 +140,11 @@ func TestInitIsIdempotentAboutTheHandDbMarker(t *testing.T) {
 	}
 }
 
-// Bootstrap answers nothing on the operator's behalf, so a fresh home leaves every worker default
-// unwritten and hands the questions to the session that reads this document.
-func TestInitWritesNoWorkerDefaultAndReportsWhatIsMissing(t *testing.T) {
+// Bootstrap persists nothing on the operator's behalf while still reporting the detected harness
+// and the harness-native tier defaults a worker will actually inherit.
+func TestInitWritesNoWorkerOverrideAndReportsEffectiveDefaults(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
-	t.Setenv("HAND_HARNESS", "unknown")
+	t.Setenv("HAND_HARNESS", harness.Codex)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
@@ -163,10 +164,13 @@ func TestInitWritesNoWorkerDefaultAndReportsWhatIsMissing(t *testing.T) {
 		t.Fatalf("init wrote config/%s, want no worker default chosen for the operator", e.Name())
 	}
 	for _, want := range []string{
-		"config_missing: 1\n",
-		"harness,missing,none",
-		"model,pending-harness,none",
-		"hand config set <key> <value>",
+		"config_missing: 0\n",
+		"harness,detected,codex",
+		"model,native-default,none",
+		"effort,native-default,none",
+		"detects the current harness",
+		"native model and effort defaults",
+		"only to persist an explicit worker override",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("init output = %q, want it to contain %q", out.String(), want)

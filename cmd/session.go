@@ -13,6 +13,7 @@ import (
 	"github.com/atqamz/secondhand/internal/herdr"
 	"github.com/atqamz/secondhand/internal/home"
 	"github.com/atqamz/secondhand/internal/project"
+	"github.com/atqamz/secondhand/internal/shellquote"
 	"github.com/atqamz/secondhand/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -119,7 +120,7 @@ func renderSessionOverview(cmd *cobra.Command, version, fleetHome string) error 
 
 func sessionContextError(fleetHome, path string, err error) error {
 	return &ExitError{
-		Err:  fmt.Errorf("read required session context %s: %w; run `hand init %s` to restore it", path, err, fleetHome),
+		Err:  fmt.Errorf("read required session context %s: %w; run `hand init %s` to restore it", path, err, shellquote.Quote(fleetHome)),
 		Code: 3,
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atqamz/secondhand/internal/agentsmd"
+	"github.com/atqamz/secondhand/internal/shellquote"
 )
 
 const (
@@ -268,5 +269,5 @@ func briefPrompt(o Options) string {
 }
 
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return shellquote.Quote(s)
 }

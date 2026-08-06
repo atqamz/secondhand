@@ -106,7 +106,8 @@ func newInitCmd() *cobra.Command {
 			}
 			appendWorkerConfig(&doc, cfg)
 			doc.List("missing_tools", missingTools())
-			doc.Help("Start a supervising session in this home; it reports the worker defaults still missing and asks you for each one (`hand config set <key> <value>`)",
+			doc.Help("Start a supervising session in this home; it detects the current harness and uses its native model and effort defaults",
+				"Run `hand config set <key> <value>` only to persist an explicit worker override",
 				"Read AGENTS.md in this home for how a supervising agent is meant to drive it",
 				"Run `hand project add <repo-url>` to register the first project",
 				"AGENTS.md and its CLAUDE.md symlink carry the startup integration across harnesses")

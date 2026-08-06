@@ -17,6 +17,7 @@ import (
 // fakeHerdrSpawnScript in spawn_test.go: real "pane run" succeeds with empty stdout, but callVoid takes
 // this envelope too, and promote only checks for a non-nil error, so the response shape is not the point.
 const fakeHerdrPromoteScript = `#!/bin/sh
+[ -z "$HERDR_CALL_LOG" ] || echo "$@" >> "$HERDR_CALL_LOG"
 cmd="$1 $2"
 case "$cmd" in
 "pane get")
@@ -134,6 +135,35 @@ func TestPromoteUsesDetectedHarnessWithoutConfiguredOverride(t *testing.T) {
 	}
 	if got.Harness != harness.Codex {
 		t.Fatalf("harness = %q, want detected %q", got.Harness, harness.Codex)
+	}
+}
+
+func TestPromoteLaunchCarriesWorkerRoleAndResolvedFleetHome(t *testing.T) {
+	oldWt := filepath.Join(t.TempDir(), "old-wt")
+	newWt := filepath.Join(t.TempDir(), "new-wt")
+	home := setupPromoteHome(t, oldWt, newWt, fakeHerdrPromoteScript)
+	t.Setenv("HAND_HOME", ".")
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("HERDR_CALL_LOG", callLog)
+
+	cmd := newPromoteCmd()
+	cmd.SetArgs([]string{"task-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	calls, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := string(calls)
+	env := "HAND_ROLE=worker HAND_HOME='" + home + "'"
+	envAt := strings.Index(launch, env)
+	if envAt < 0 {
+		t.Fatalf("launch = %q, want absolute worker environment %q", launch, env)
+	}
+	if harnessAt := strings.Index(launch, "claude --dangerously"); harnessAt < 0 || envAt > harnessAt {
+		t.Fatalf("launch = %q, want worker environment before harness executable", launch)
 	}
 }
 
