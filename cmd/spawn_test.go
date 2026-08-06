@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/project"
 	"github.com/atqamz/secondhand/internal/state"
 )
@@ -73,6 +74,7 @@ func writeFakeTreehouseGet(t *testing.T, bin, worktreePath string) {
 func setupSpawnHome(t *testing.T, worktreePath, herdrScript string) string {
 	t.Helper()
 	useFastLaunchPolling(t)
+	t.Setenv("HAND_HARNESS", harness.Claude)
 	home := t.TempDir()
 
 	if err := os.MkdirAll(filepath.Join(home, "data", "task-1"), 0o755); err != nil {
@@ -97,6 +99,71 @@ func setupSpawnHome(t *testing.T, worktreePath, herdrScript string) string {
 	t.Chdir(home)
 	mkFleetDirs(t, home)
 	return home
+}
+
+func TestSpawnUsesDetectedHarnessWithoutConfiguredOverride(t *testing.T) {
+	wt := filepath.Join(t.TempDir(), "wt")
+	codexHerdr := strings.ReplaceAll(fakeHerdrSpawnScript, `"agent":"claude"`, `"agent":"codex"`)
+	home := setupSpawnHome(t, wt, codexHerdr)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+
+	cmd := newSpawnCmd()
+	cmd.SetArgs([]string{"task-1", "myproj"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.Read(home, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Harness != harness.Codex {
+		t.Fatalf("harness = %q, want detected %q", got.Harness, harness.Codex)
+	}
+}
+
+func TestSpawnConfiguredHarnessWinsOverDetectedHarness(t *testing.T) {
+	wt := filepath.Join(t.TempDir(), "wt")
+	home := setupSpawnHome(t, wt, fakeHerdrSpawnScript)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config", "harness"), []byte(harness.Claude+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newSpawnCmd()
+	cmd.SetArgs([]string{"task-1", "myproj"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.Read(home, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Harness != harness.Claude {
+		t.Fatalf("harness = %q, want configured %q", got.Harness, harness.Claude)
+	}
+}
+
+func TestSpawnUnknownDetectedHarnessFailsBeforeWorktreeAcquisition(t *testing.T) {
+	home := setupSpawnHome(t, filepath.Join(t.TempDir(), "wt"), fakeHerdrSpawnScript)
+	t.Setenv("HAND_HARNESS", "unknown")
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+
+	cmd := newSpawnCmd()
+	cmd.SetArgs([]string{"task-1", "myproj"})
+	err := cmd.Execute()
+	assertExitCode3(t, err)
+	if !strings.Contains(err.Error(), "current supervisor harness is unknown") {
+		t.Fatalf("error = %v, want unknown-supervisor remedy", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(bin, ".treehouse-leases")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("treehouse acquisition counter exists: %v", statErr)
+	}
+	if _, readErr := state.Read(home, "task-1"); !errors.Is(readErr, state.ErrTaskNotFound) {
+		t.Fatalf("task state after refusal = %v", readErr)
+	}
 }
 
 func TestSpawnHappyPath(t *testing.T) {

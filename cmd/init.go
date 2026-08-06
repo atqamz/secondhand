@@ -100,7 +100,11 @@ func newInitCmd() *cobra.Command {
 			doc.Field("agents_md", writtenOrUnchanged(refreshed))
 			doc.Field("session_hook", writtenOrUnchanged(hooked))
 			doc.List("migrated", migrated)
-			appendWorkerConfig(&doc, readWorkerConfig(home))
+			cfg, err := currentWorkerConfig(home)
+			if err != nil {
+				return err
+			}
+			appendWorkerConfig(&doc, cfg)
 			doc.List("missing_tools", missingTools())
 			doc.Help("Start a supervising session in this home; it reports the worker defaults still missing and asks you for each one (`hand config set <key> <value>`)",
 				"Read AGENTS.md in this home for how a supervising agent is meant to drive it",

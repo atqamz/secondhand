@@ -143,6 +143,7 @@ func TestInitIsIdempotentAboutTheHandDbMarker(t *testing.T) {
 // unwritten and hands the questions to the session that reads this document.
 func TestInitWritesNoWorkerDefaultAndReportsWhatIsMissing(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
+	t.Setenv("HAND_HARNESS", "unknown")
 	dir := t.TempDir()
 	t.Chdir(dir)
 

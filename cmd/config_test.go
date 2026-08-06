@@ -13,6 +13,7 @@ import (
 
 func setupConfigHome(t *testing.T) string {
 	t.Helper()
+	t.Setenv("HAND_HARNESS", harness.Claude)
 	home := t.TempDir()
 	mkFleetDirs(t, home)
 	t.Chdir(home)
@@ -49,7 +50,11 @@ func assertExitCode(t *testing.T, err error, want int) {
 
 func settingState(t *testing.T, home, key string) string {
 	t.Helper()
-	for _, s := range readWorkerConfig(home).settings {
+	cfg, err := currentWorkerConfig(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range cfg.settings {
 		if s.key == key {
 			return s.state
 		}
@@ -58,33 +63,48 @@ func settingState(t *testing.T, home, key string) string {
 	return ""
 }
 
-// The state an unconfigured home reports is the whole first-run flow in one document: one question to
-// answer, and two that are not questions yet because applicability follows the harness.
-func TestConfigOnAnEmptyHomeAsksForTheHarnessFirst(t *testing.T) {
-	setupConfigHome(t)
-
-	cmd := newConfigCmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-
-	got := out.String()
-	for _, want := range []string{
-		"config_missing: 1\n",
-		"harness,missing,none",
-		"model,pending-harness,none",
-		"effort,pending-harness,none",
-		"hand config set harness <name>",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("config output = %q, want it to contain %q", got, want)
+func assertSetting(t *testing.T, cfg workerConfig, key, state, value string) {
+	t.Helper()
+	for _, setting := range cfg.settings {
+		if setting.key == key {
+			if setting.state != state || setting.value != value {
+				t.Fatalf("%s setting = %#v, want state %q value %q", key, setting, state, value)
+			}
+			return
 		}
 	}
-	if strings.Contains(got, "hand config set model") {
-		t.Fatalf("config output = %q, want no model question before a harness is chosen", got)
+	t.Fatalf("no %q setting in %#v", key, cfg)
+}
+
+func TestConfigUsesDetectedHarnessAndNativeTierDefaults(t *testing.T) {
+	home := setupConfigHome(t)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+
+	cfg, err := currentWorkerConfig(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSetting(t, cfg, settingHarness, stateDetected, harness.Codex)
+	assertSetting(t, cfg, settingModel, stateNativeDefault, "")
+	assertSetting(t, cfg, settingEffort, stateNativeDefault, "")
+}
+
+func TestConfigReportsOneMissingDecisionWhenDetectionIsUnknown(t *testing.T) {
+	home := setupConfigHome(t)
+	t.Setenv("HAND_HARNESS", "unknown")
+
+	cfg, err := currentWorkerConfig(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.harness != "" || configMissing(cfg) != 1 {
+		t.Fatalf("cfg = %#v, want only harness missing", cfg)
+	}
+	assertSetting(t, cfg, settingHarness, stateMissing, "")
+	assertSetting(t, cfg, settingModel, statePendingHarness, "")
+	assertSetting(t, cfg, settingEffort, statePendingHarness, "")
+	if help := workerConfigHelp(cfg); len(help) != 1 || !strings.Contains(help[0], "hand config set harness <name>") {
+		t.Fatalf("help = %v, want only the unknown-harness remedy", help)
 	}
 }
 
@@ -98,9 +118,9 @@ func TestConfigApplicabilityFollowsTheHarnessContract(t *testing.T) {
 		model   string
 		effort  string
 	}{
-		{harness.Claude, stateMissing, stateMissing},
-		{harness.OpenCode, stateMissing, stateUnsupported},
-		{harness.Codex, stateMissing, stateMissing},
+		{harness.Claude, stateNativeDefault, stateNativeDefault},
+		{harness.OpenCode, stateNativeDefault, stateUnsupported},
+		{harness.Codex, stateNativeDefault, stateNativeDefault},
 		{harness.Grok, stateUnsupported, stateUnsupported},
 		{harness.Pi, stateUnsupported, stateUnsupported},
 	} {
@@ -137,7 +157,7 @@ func TestConfigSetPersistsUnderTheConfiguredHarness(t *testing.T) {
 		t.Fatal("an unkeyed config/model was written, which the next harness would inherit")
 	}
 	// The answer's own document carries the recheck, so a supervisor never has to guess what is left.
-	for _, want := range []string{"file: config/model.claude", "model,configured,claude-opus-5", "config_missing: 1\n"} {
+	for _, want := range []string{"file: config/model.claude", "model,configured,claude-opus-5", "config_missing: 0\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("set output = %q, want it to contain %q", out, want)
 		}
@@ -164,13 +184,28 @@ func TestConfigSetFeedsTheResolvedTier(t *testing.T) {
 	}
 }
 
-func TestConfigSetRefusesModelBeforeAHarnessIsChosen(t *testing.T) {
+func TestConfigSetRefusesModelWhenTheSupervisorHarnessIsUnknown(t *testing.T) {
 	home := setupConfigHome(t)
+	t.Setenv("HAND_HARNESS", "unknown")
 
 	_, err := runConfigSet(t, settingModel, "claude-opus-5")
 	assertExitCode(t, err, 3)
 	if _, err := os.Stat(filepath.Join(home, "config", "model")); err == nil {
 		t.Fatal("config/model was written despite the refusal")
+	}
+}
+
+func TestConfigSetPersistsUnderTheDetectedHarness(t *testing.T) {
+	home := setupConfigHome(t)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+
+	out := mustConfigSet(t, settingModel, "gpt-5.6-codex")
+	got, err := os.ReadFile(filepath.Join(home, "config", "model.codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "gpt-5.6-codex\n" || !strings.Contains(out, "file: config/model.codex") {
+		t.Fatalf("config/model.codex = %q, output = %q", got, out)
 	}
 }
 
@@ -203,8 +238,8 @@ func TestConfigSwitchingHarnessNeverInheritsAnotherHarnessDefault(t *testing.T) 
 	mustConfigSet(t, settingModel, "claude-opus-5")
 	mustConfigSet(t, settingHarness, harness.OpenCode)
 
-	if got := settingState(t, home, settingModel); got != stateMissing {
-		t.Fatalf("opencode model state = %q, want %q", got, stateMissing)
+	if got := settingState(t, home, settingModel); got != stateNativeDefault {
+		t.Fatalf("opencode model state = %q, want %q", got, stateNativeDefault)
 	}
 	cmd, _ := newTierTestCmd()
 	model, _, _, err := resolveTier(cmd, home, briefAbs, harness.OpenCode, "", "")
@@ -222,21 +257,17 @@ func TestConfigSwitchingHarnessNeverInheritsAnotherHarnessDefault(t *testing.T) 
 	}
 }
 
-// A configured value is not asked about again, and one the operator never answered stays visible without
-// blocking anything else the session does.
-func TestConfigRepeatSessionsOnlyAskForWhatIsStillMissing(t *testing.T) {
+func TestConfigNativeDefaultsDoNotAskTheOperator(t *testing.T) {
 	home := setupConfigHome(t)
 	mustConfigSet(t, settingHarness, harness.Claude)
 	mustConfigSet(t, settingModel, "claude-opus-5")
 
-	help := workerConfigHelp(readWorkerConfig(home))
-	if len(help) != 1 || !strings.Contains(help[0], "hand config set effort") {
-		t.Fatalf("help = %v, want only the declined effort question", help)
+	cfg, err := currentWorkerConfig(home)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	mustConfigSet(t, settingEffort, "high")
-	if help := workerConfigHelp(readWorkerConfig(home)); len(help) != 0 {
-		t.Fatalf("help = %v, want no questions once every applicable value is configured", help)
+	if help := workerConfigHelp(cfg); len(help) != 0 {
+		t.Fatalf("help = %v, want native effort selection left to claude", help)
 	}
 }
 
@@ -295,9 +326,9 @@ func TestMigrateWorkerSettingsKeysAnOlderHomesDefaults(t *testing.T) {
 	}
 }
 
-// A home with no harness file still dispatches claude (hand spawn's fallback), so that is the harness its
-// unkeyed value belonged to.
-func TestMigrateWorkerSettingsKeysToClaudeWhenNoHarnessIsConfigured(t *testing.T) {
+// With no recorded harness, an old unkeyed setting is ambiguous and cannot safely be assigned to the
+// currently supervising harness.
+func TestMigrateWorkerSettingsLeavesAmbiguousDefaultsUntouched(t *testing.T) {
 	home := setupConfigHome(t)
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -309,12 +340,15 @@ func TestMigrateWorkerSettingsKeysToClaudeWhenNoHarnessIsConfigured(t *testing.T
 	if _, err := migrateWorkerSettings(home); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(home, "config", "model.claude"))
+	got, err := os.ReadFile(filepath.Join(home, "config", "model"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(got)) != "claude-sonnet-5" {
-		t.Fatalf("config/model.claude = %q", got)
+	if string(got) != "claude-sonnet-5\n" {
+		t.Fatalf("config/model = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, "config", "model.claude")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config/model.claude exists after ambiguous migration: %v", err)
 	}
 }
 

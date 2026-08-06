@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -122,6 +123,7 @@ func runBareRoot(t *testing.T) string {
 }
 
 func TestBareInvocationLeadsWithTheFleetItManages(t *testing.T) {
+	t.Setenv("HAND_HARNESS", harness.Claude)
 	home := t.TempDir()
 	t.Chdir(home)
 	mkFleetDirs(t, home)
@@ -149,6 +151,7 @@ func TestBareInvocationLeadsWithTheFleetItManages(t *testing.T) {
 // The bare command is the session hook, so it is the only place a supervising agent learns that the
 // fleet is not configured yet, and the only place the question can be put in front of the operator.
 func TestBareInvocationReportsConfigurationStateAndAsksTheOperator(t *testing.T) {
+	t.Setenv("HAND_HARNESS", "unknown")
 	home := t.TempDir()
 	t.Chdir(home)
 	mkFleetDirs(t, home)
@@ -185,6 +188,7 @@ func TestBareInvocationReportsConfigurationStateAndAsksTheOperator(t *testing.T)
 }
 
 func TestBareInvocationOutsideAFleetHomeSaysSoAndNamesTheWayIn(t *testing.T) {
+	t.Setenv("HAND_HARNESS", harness.Claude)
 	t.Chdir(t.TempDir())
 	t.Setenv("HAND_HOME", "")
 
