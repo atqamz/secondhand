@@ -99,11 +99,14 @@ func TestDoctorSeparatesInformationalFindingsFromViolations(t *testing.T) {
 	}
 }
 
-func TestDoctorMarkerLessAgentsMdIsInformationalNotFailing(t *testing.T) {
+func TestDoctorReportsMarkersRemovedAfterInitializationAsInformational(t *testing.T) {
 	home := t.TempDir()
 	t.Chdir(home)
 	mkFleetDirs(t, home)
 	path := filepath.Join(home, "AGENTS.md")
+	if _, err := agentsmd.Refresh(home); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte("# Hand-authored, no generated markers\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +120,39 @@ func TestDoctorMarkerLessAgentsMdIsInformationalNotFailing(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no hand:generated markers") {
 		t.Fatalf("stdout = %q, want the missing-markers finding reported even though it does not fail", out.String())
+	}
+}
+
+func TestDoctorReportsMalformedMarkersWithLineNumbers(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"unpaired", "# Rules\n<!-- hand:generated:start -->\n", "  2,violation,\"unpaired hand:generated start marker\""},
+		{"duplicate", "<!-- hand:generated:start -->\n<!-- hand:generated:start -->\n<!-- hand:generated:end -->\n", "  2,violation,\"duplicate hand:generated start marker\""},
+		{"reversed", "<!-- hand:generated:end -->\n<!-- hand:generated:start -->\n", "  1,violation,\"hand:generated end marker appears before start marker\""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Chdir(home)
+			mkFleetDirs(t, home)
+			if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			cmd := newDoctorCmd()
+			cmd.SetOut(&out)
+			cmd.SetArgs(nil)
+			if err := cmd.Execute(); err == nil {
+				t.Fatal("got nil error, want malformed markers to fail doctor")
+			}
+			if !strings.Contains(out.String(), tt.want) {
+				t.Fatalf("stdout = %q, want %q", out.String(), tt.want)
+			}
+		})
 	}
 }
 

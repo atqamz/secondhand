@@ -156,8 +156,8 @@ func TestUpdateRefreshesWorkspaceAndReportsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agentsMD), "## Workflow") {
-		t.Fatalf("got %q, want AGENTS.md written with the workflow template", agentsMD)
+	if !strings.Contains(string(agentsMD), "## Secondhand supervisor bootstrap") {
+		t.Fatalf("got %q, want AGENTS.md written with the supervisor bootstrap", agentsMD)
 	}
 }
 
@@ -306,8 +306,8 @@ func TestUpdateRefreshesHandHomeRatherThanWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agentsMD), "## Workflow") {
-		t.Fatalf("got %q, want AGENTS.md written with the workflow template", agentsMD)
+	if !strings.Contains(string(agentsMD), "## Secondhand supervisor bootstrap") {
+		t.Fatalf("got %q, want AGENTS.md written with the supervisor bootstrap", agentsMD)
 	}
 }
 
