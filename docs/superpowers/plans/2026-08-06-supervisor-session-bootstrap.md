@@ -387,12 +387,28 @@ func TestRefreshAppendsManagedBlockToUnmarkedAgentsMd(t *testing.T) {
 }
 
 func TestRefreshRefusesDuplicateOrUnpairedMarkers(t *testing.T) {
-	for _, content := range []string{
-		beginMarker + "\nmissing end\n",
-		endMarker + "\n",
-		generatedBlock() + generatedBlock(),
+	for name, content := range map[string]string{
+		"missing end": beginMarker + "\nmissing end\n",
+		"end only": endMarker + "\n",
+		"duplicate": generatedBlock() + generatedBlock(),
 	} {
-		// Write content into a fleet home, call Refresh, and assert an error and unchanged bytes.
+		t.Run(name, func(t *testing.T) {
+			dir := makeWorkspace(t)
+			path := filepath.Join(dir, "AGENTS.md")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Refresh(dir); err == nil {
+				t.Fatal("Refresh succeeded, want malformed-marker error")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != content {
+				t.Fatalf("got %q, want unchanged %q", got, content)
+			}
+		})
 	}
 }
 ```
@@ -531,6 +547,7 @@ tests := []struct {
 	want        string
 }{
 	{"unknown harness", unknownConfig(), 0, backlogSummary{}, nil, nil, "hand config set harness"},
+	{"attention before hold", detectedConfig(), 1, backlogSummary{}, []taskView{{task: state.Task{ID: "x"}, unacked: true}}, []state.Hold{{ID: "y"}}, "hand status x"},
 	{"hold before no projects", detectedConfig(), 0, backlogSummary{}, nil, []state.Hold{{ID: "x"}}, "hand status x"},
 	{"first project", detectedConfig(), 0, backlogSummary{}, nil, nil, "hand project add"},
 	{"queued work", detectedConfig(), 1, backlogSummary{Queued: 1}, nil, nil, "prepare the queued task"},
@@ -539,7 +556,7 @@ tests := []struct {
 }
 ```
 
-Add an attention/unacknowledged case before holds if the existing `needsAttention` view exposes it separately; otherwise assert both share priority two and the emitted action names the task first.
+The attention case establishes that an unacknowledged worker event wins within priority two; holds win over project registration when there is no task attention.
 
 - [ ] **Step 3: Run session tests and verify red**
 
