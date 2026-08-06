@@ -85,7 +85,7 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve the hand executable: %w", err)
 			}
-			hooked, err := sessionhook.Refresh(home, exe)
+			hookRemoved, err := sessionhook.Remove(home, exe)
 			if err != nil {
 				return err
 			}
@@ -98,7 +98,7 @@ func newInitCmd() *cobra.Command {
 			doc.Field("result", "initialized")
 			doc.Field("home", home)
 			doc.Field("agents_md", writtenOrUnchanged(refreshed))
-			doc.Field("session_hook", writtenOrUnchanged(hooked))
+			doc.Field("session_hook", removedOrUnchanged(hookRemoved))
 			doc.List("migrated", migrated)
 			cfg, err := currentWorkerConfig(home)
 			if err != nil {
@@ -109,7 +109,7 @@ func newInitCmd() *cobra.Command {
 			doc.Help("Start a supervising session in this home; it reports the worker defaults still missing and asks you for each one (`hand config set <key> <value>`)",
 				"Read AGENTS.md in this home for how a supervising agent is meant to drive it",
 				"Run `hand project add <repo-url>` to register the first project",
-				"The session integration installed here is a Claude Code `SessionStart` hook, so a session opened with another harness reads AGENTS.md itself")
+				"AGENTS.md and its CLAUDE.md symlink carry the startup integration across harnesses")
 			return doc.Render(cmd.OutOrStdout())
 		},
 	}
@@ -130,6 +130,13 @@ func missingTools() []string {
 func writtenOrUnchanged(changed bool) string {
 	if changed {
 		return "written"
+	}
+	return "unchanged"
+}
+
+func removedOrUnchanged(changed bool) string {
+	if changed {
+		return "removed"
 	}
 	return "unchanged"
 }

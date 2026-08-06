@@ -53,7 +53,7 @@ func newUpdateCmd(version string) *cobra.Command {
 			// The binary is already replaced by this point, so a failed AGENTS.md refresh or skeleton seed is
 			// reported as a warning rather than an error: exiting nonzero here reads as "the update failed" and
 			// invites a pointless re-run.
-			var refreshed, hooked bool
+			var refreshed, hookRemoved bool
 			var seedErr, hookErr error
 			fleetHome, refreshErr := home.Resolve()
 			switch {
@@ -63,11 +63,11 @@ func newUpdateCmd(version string) *cobra.Command {
 				// that installs it also leaves those files in place - directories included, since a home resolves
 				// as one on its state/hand.db marker alone.
 				seedErr = initLayout(fleetHome)
-				// An install that moved leaves the session hook pointing at a
-				// path with no binary behind it any more.
+				// Generated instructions supersede the Claude-only hook, so an
+				// update retires Secondhand's command without touching others.
 				var exe string
 				if exe, hookErr = os.Executable(); hookErr == nil {
-					hooked, hookErr = sessionhook.Refresh(fleetHome, exe)
+					hookRemoved, hookErr = sessionhook.Remove(fleetHome, exe)
 				}
 			case errors.Is(refreshErr, home.ErrNotFound):
 				refreshErr = nil
@@ -79,7 +79,7 @@ func newUpdateCmd(version string) *cobra.Command {
 				}
 			}
 			if hookErr != nil {
-				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "warning: refresh the session hook: %v\n", hookErr); err != nil {
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "warning: retire the session hook: %v\n", hookErr); err != nil {
 					return err
 				}
 			}
@@ -96,7 +96,7 @@ func newUpdateCmd(version string) *cobra.Command {
 			doc.Bool("update_available", true)
 			doc.Bool("updated", true)
 			doc.Field("agents_md", refreshOutcome(fleetHome, refreshed, refreshErr))
-			doc.Field("session_hook", refreshOutcome(fleetHome, hooked, hookErr))
+			doc.Field("session_hook", retirementOutcome(fleetHome, hookRemoved, hookErr))
 			doc.List("notes", releaseNoteLines(notes))
 			doc.Help("Run `hand doctor` to check this home's AGENTS.md against the template " + latest + " installed")
 			return doc.Render(cmd.OutOrStdout())
@@ -117,6 +117,19 @@ func refreshOutcome(fleetHome string, changed bool, err error) string {
 		return "no-fleet-home"
 	case changed:
 		return "refreshed"
+	default:
+		return "unchanged"
+	}
+}
+
+func retirementOutcome(fleetHome string, changed bool, err error) string {
+	switch {
+	case err != nil:
+		return "failed"
+	case fleetHome == "":
+		return "no-fleet-home"
+	case changed:
+		return "removed"
 	default:
 		return "unchanged"
 	}

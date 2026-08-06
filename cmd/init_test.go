@@ -230,12 +230,13 @@ func TestInitNeverReadsStdin(t *testing.T) {
 	}
 }
 
-func TestInitInstallsTheSessionHookAndSaysSoOnlyWhenItWroteIt(t *testing.T) {
+func TestInitRemovesTheSessionHookAndSaysSoOnlyWhenItChangedSettings(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeOwnedSessionHook(t, dir)
 
-	for i, want := range []string{"session_hook: written\n", "session_hook: unchanged\n"} {
+	for i, want := range []string{"session_hook: removed\n", "session_hook: unchanged\n"} {
 		cmd := newInitCmd()
 		var out bytes.Buffer
 		cmd.SetOut(&out)
@@ -246,13 +247,16 @@ func TestInitInstallsTheSessionHookAndSaysSoOnlyWhenItWroteIt(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("run %d output = %q, want it to contain %q", i+1, out.String(), want)
 		}
+		if !strings.Contains(out.String(), "AGENTS.md and its CLAUDE.md symlink carry the startup integration across harnesses") {
+			t.Fatalf("run %d output = %q, want cross-harness startup help", i+1, out.String())
+		}
 	}
 
 	settings, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(settings), "SessionStart") {
-		t.Fatalf("settings = %q, want a SessionStart hook in it", settings)
+	if strings.Contains(string(settings), "/old/path/hand") || !strings.Contains(string(settings), "/usr/bin/custom") {
+		t.Fatalf("settings = %q, want only the unrelated hook preserved", settings)
 	}
 }
