@@ -65,7 +65,10 @@ Bare `hand` remains a compatible fleet overview and delegates to the same sessio
 
 ### Managed instruction block
 
-`hand init` owns only content between `hand:begin` and `hand:end` markers.
+`hand init` owns only content between the existing `hand:generated:start` and
+`hand:generated:end` markers. Retaining these marker spellings lets current
+fleet homes replace their managed block in place instead of accumulating a
+second generation of managed content.
 
 - If `AGENTS.md` is absent, initialization creates it with the managed block.
 - If a valid marked block exists, initialization refreshes only that span.
@@ -77,12 +80,12 @@ Bare `hand` remains a compatible fleet overview and delegates to the same sessio
 The generic fleet-home block says, in substance:
 
 ```md
-<!-- hand:begin -->
+<!-- hand:generated:start -->
 ## Secondhand supervisor bootstrap
 
 Before responding or acting in a supervising session, run `hand session start`.
 Do not run supervisor bootstrap when `HAND_ROLE=worker`.
-<!-- hand:end -->
+<!-- hand:generated:end -->
 ```
 
 The complete fleet operating contract is returned by `hand session start` or referenced through its targeted next steps. The managed block stays short enough to remain prominent in every supported harness's instruction context.
