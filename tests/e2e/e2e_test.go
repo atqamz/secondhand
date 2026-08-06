@@ -100,15 +100,30 @@ func runHand(t *testing.T, home string, args ...string) invocation {
 	return runHandEnv(t, home, nil, args...)
 }
 
-// runHand for the cases that need one extra environment entry, appended to the suite's own (already
-// HAND_HOME-free) environment.
+func handProcessEnv(extraEnv ...string) []string {
+	overridden := map[string]bool{"HAND_ROLE": true}
+	for _, entry := range extraEnv {
+		if name, _, ok := strings.Cut(entry, "="); ok {
+			overridden[strings.ToUpper(name)] = true
+		}
+	}
+	env := make([]string, 0, len(os.Environ())+len(extraEnv))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !overridden[strings.ToUpper(name)] {
+			env = append(env, entry)
+		}
+	}
+	return append(env, extraEnv...)
+}
+
+// Runs hand with explicit entries replacing ambient values; HAND_ROLE is absent unless a worker test
+// opts in, so the suite's own role never changes the child being exercised.
 func runHandEnv(t *testing.T, home string, extraEnv []string, args ...string) invocation {
 	t.Helper()
 	cmd := exec.Command(handBin, args...)
 	cmd.Dir = home
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = handProcessEnv(extraEnv...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -159,6 +174,7 @@ func startHandBackground(t *testing.T, home string, args ...string) *backgroundH
 	t.Helper()
 	cmd := exec.Command(handBin, args...)
 	cmd.Dir = home
+	cmd.Env = handProcessEnv()
 	stdout := &syncBuffer{}
 	stderr := &syncBuffer{}
 	cmd.Stdout = stdout

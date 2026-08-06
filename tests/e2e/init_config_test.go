@@ -18,6 +18,7 @@ func runHandStdin(t *testing.T, home string, stdin *os.File, args ...string) inv
 	t.Helper()
 	cmd := exec.Command(handBin, args...)
 	cmd.Dir = home
+	cmd.Env = handProcessEnv()
 	cmd.Stdin = stdin
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -75,7 +76,55 @@ func devNull(t *testing.T) *os.File {
 	return f
 }
 
-// Bootstrap runs in scripts and in CI, and the session hook runs on every session start, so neither may
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		switch {
+		case entry.IsDir():
+			snapshot[rel] = "directory"
+		case entry.Type()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			snapshot[rel] = "symlink:" + target
+		default:
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			snapshot[rel] = "file:" + string(content)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertTreeUnchanged(t *testing.T, root string, before map[string]string) {
+	t.Helper()
+	after := snapshotTree(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("tree %s has %d entries after session start, want %d", root, len(after), len(before))
+	}
+	for path, want := range before {
+		if got, ok := after[path]; !ok || got != want {
+			t.Fatalf("tree %s entry %q changed", root, path)
+		}
+	}
+}
+
+// Bootstrap runs in scripts and CI, and session start runs at every supervising session, so neither may
 // ever depend on something being on stdin.
 func TestInitAndSessionStartNeverBlockOnStdin(t *testing.T) {
 	for _, tc := range []struct {
@@ -120,13 +169,16 @@ func TestFirstRunInstalledCLIBootstrapsADetectedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(agents), preamble) {
-		t.Fatalf("AGENTS.md = %q, want existing preamble %q preserved", agents, preamble)
-	}
-	for _, marker := range []string{"<!-- hand:generated:start -->", "<!-- hand:generated:end -->"} {
-		if count := strings.Count(string(agents), marker); count != 1 {
-			t.Fatalf("AGENTS.md contains %d copies of %q, want one appended managed block", count, marker)
-		}
+	const managedBootstrap = `<!-- hand:generated:start -->
+## Secondhand supervisor bootstrap
+
+Before responding or acting in a supervising session, run ` + "`hand session start`" + `.
+Do not run supervisor bootstrap when ` + "`HAND_ROLE=worker`" + `.
+<!-- hand:generated:end -->
+`
+	wantAgents := preamble + "\n" + managedBootstrap
+	if string(agents) != wantAgents {
+		t.Fatalf("AGENTS.md = %q, want exact preserved preamble plus current managed bootstrap %q", agents, wantAgents)
 	}
 
 	session := runHandEnv(t, home, []string{"HAND_HARNESS=codex"}, "session", "start")
@@ -221,24 +273,13 @@ func TestWorkerWorktreeNeverBootstrapsSupervisor(t *testing.T) {
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	database := filepath.Join(home, "state", "hand.db")
-	before, err := os.ReadFile(database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fleetBefore := snapshotTree(t, home)
+	worktreeBefore := snapshotTree(t, worktree)
 
 	got := runHandEnv(t, worktree, []string{"HAND_HOME=" + home, "HAND_ROLE=worker"}, "session", "start")
 	assertInvocation(t, got, 3, "supervisor session bootstrap is unavailable when HAND_ROLE=worker")
-	if _, err := os.Stat(filepath.Join(worktree, "state", "hand.db")); !os.IsNotExist(err) {
-		t.Fatalf("worker-local state/hand.db exists or cannot be checked: %v", err)
-	}
-	after, err := os.ReadFile(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatal("worker-role session start mutated the fleet database")
-	}
+	assertTreeUnchanged(t, home, fleetBefore)
+	assertTreeUnchanged(t, worktree, worktreeBefore)
 }
 
 // The retired flag has to refuse rather than be ignored, so a script still passing it is told the
