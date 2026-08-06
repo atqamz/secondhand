@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/project"
 	"github.com/atqamz/secondhand/internal/state"
 )
@@ -65,6 +66,7 @@ esac
 func setupPromoteHome(t *testing.T, oldWorktree, newWorktree, herdrScript string) string {
 	t.Helper()
 	useFastLaunchPolling(t)
+	t.Setenv("HAND_HARNESS", harness.Claude)
 	home := t.TempDir()
 
 	if err := os.MkdirAll(filepath.Join(home, "data", "task-1"), 0o755); err != nil {
@@ -104,10 +106,12 @@ func setupPromoteHome(t *testing.T, oldWorktree, newWorktree, herdrScript string
 	return home
 }
 
-func TestPromoteHappyPath(t *testing.T) {
+func TestPromoteUsesDetectedHarnessWithoutConfiguredOverride(t *testing.T) {
 	oldWt := filepath.Join(t.TempDir(), "old-wt")
 	newWt := filepath.Join(t.TempDir(), "new-wt")
-	home := setupPromoteHome(t, oldWt, newWt, fakeHerdrPromoteScript)
+	codexHerdr := strings.ReplaceAll(fakeHerdrPromoteScript, `"agent":"claude"`, `"agent":"codex"`)
+	home := setupPromoteHome(t, oldWt, newWt, codexHerdr)
+	t.Setenv("HAND_HARNESS", harness.Codex)
 
 	cmd := newPromoteCmd()
 	cmd.SetArgs([]string{"task-1"})
@@ -128,8 +132,53 @@ func TestPromoteHappyPath(t *testing.T) {
 	if got.Herdr.TabID != "wA:tNew" || got.Herdr.PaneID != "wA:pNew" {
 		t.Fatalf("herdr = %+v, want new tab/pane", got.Herdr)
 	}
-	if got.Harness != "claude" {
-		t.Fatalf("harness = %q, want claude", got.Harness)
+	if got.Harness != harness.Codex {
+		t.Fatalf("harness = %q, want detected %q", got.Harness, harness.Codex)
+	}
+}
+
+func TestPromoteConfiguredHarnessWinsOverDetectedHarness(t *testing.T) {
+	home := setupPromoteHome(t, filepath.Join(t.TempDir(), "old-wt"), filepath.Join(t.TempDir(), "new-wt"), fakeHerdrPromoteScript)
+	t.Setenv("HAND_HARNESS", harness.Codex)
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config", "harness"), []byte(harness.Claude+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newPromoteCmd()
+	cmd.SetArgs([]string{"task-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.Read(home, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Harness != harness.Claude {
+		t.Fatalf("harness = %q, want configured %q", got.Harness, harness.Claude)
+	}
+}
+
+func TestPromoteUnknownDetectedHarnessFailsBeforeWorktreeAcquisition(t *testing.T) {
+	home := setupPromoteHome(t, filepath.Join(t.TempDir(), "old-wt"), filepath.Join(t.TempDir(), "new-wt"), fakeHerdrPromoteScript)
+	t.Setenv("HAND_HARNESS", "unknown")
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+
+	cmd := newPromoteCmd()
+	cmd.SetArgs([]string{"task-1"})
+	err := cmd.Execute()
+	assertExitCode3(t, err)
+	if !strings.Contains(err.Error(), "current supervisor harness is unknown") {
+		t.Fatalf("error = %v, want unknown-supervisor remedy", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(bin, ".treehouse-leases")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("treehouse acquisition counter exists: %v", statErr)
+	}
+	got, readErr := state.Read(home, "task-1")
+	if readErr != nil || got.Kind != state.KindScout {
+		t.Fatalf("task after refusal = %#v, %v, want unchanged scout", got, readErr)
 	}
 }
 
