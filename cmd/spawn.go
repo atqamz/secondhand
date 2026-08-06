@@ -138,6 +138,7 @@ func newSpawnCmd() *cobra.Command {
 			launchCmd, err := harness.Build(harnessName, harness.Options{
 				Worktree:            wt,
 				Brief:               briefAbs,
+				FleetHome:           home,
 				Model:               model,
 				Effort:              effort,
 				BriefHasFrontMatter: briefHasFrontMatter,

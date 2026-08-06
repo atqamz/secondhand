@@ -43,6 +43,25 @@ func TestBuildAlwaysCdsIntoWorktree(t *testing.T) {
 	}
 }
 
+// A worker needs its role and fleet home before every harness-specific setting, so child processes
+// can reliably decline supervisor-only commands while still locating the fleet state.
+func TestBuildCarriesWorkerRoleAndFleetHome(t *testing.T) {
+	for _, name := range Names() {
+		got, err := Build(name, Options{
+			Worktree:  "/tmp/wt",
+			Brief:     "/tmp/brief.md",
+			FleetHome: "/tmp/fleet home",
+		})
+		if err != nil {
+			t.Fatalf("Build(%q): %v", name, err)
+		}
+		want := "HAND_ROLE=worker HAND_HOME='/tmp/fleet home'"
+		if !strings.Contains(got, want) {
+			t.Fatalf("Build(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestBuildClaude(t *testing.T) {
 	got, err := Build(Claude, Options{Worktree: "/tmp/wt", Brief: "/tmp/data/fix-login/brief.md"})
 	if err != nil {

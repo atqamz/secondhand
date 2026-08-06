@@ -32,6 +32,9 @@ func TestSpawnCleanupReportsAllErrors(t *testing.T) {
 // startup frame with no first-run dialog, so confirmLaunch confirms on its first poll. It echoes an
 // envelope for the void "pane run" too, which callVoid accepts (real shapes: internal/faketool/FIDELITY.md).
 const fakeHerdrSpawnScript = `#!/bin/sh
+if [ -n "$HERDR_CALL_LOG" ]; then
+	echo "$@" >> "$HERDR_CALL_LOG"
+fi
 cmd="$1 $2"
 case "$cmd" in
 "workspace list")
@@ -169,6 +172,9 @@ func TestSpawnUnknownDetectedHarnessFailsBeforeWorktreeAcquisition(t *testing.T)
 func TestSpawnHappyPath(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "wt")
 	home := setupSpawnHome(t, wt, fakeHerdrSpawnScript)
+	t.Setenv("HAND_HOME", ".")
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("HERDR_CALL_LOG", callLog)
 
 	cmd := newSpawnCmd()
 	cmd.SetArgs([]string{"task-1", "myproj"})
@@ -191,6 +197,19 @@ func TestSpawnHappyPath(t *testing.T) {
 	}
 	if got.LeaseID != "lease-1" {
 		t.Fatalf("got lease id %q, want the identity treehouse handed back", got.LeaseID)
+	}
+	calls, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := string(calls)
+	env := "HAND_ROLE=worker HAND_HOME='" + home + "'"
+	envAt := strings.Index(launch, env)
+	if envAt < 0 {
+		t.Fatalf("launch = %q, want absolute worker environment %q", launch, env)
+	}
+	if harnessAt := strings.Index(launch, "claude --dangerously"); harnessAt < 0 || envAt > harnessAt {
+		t.Fatalf("launch = %q, want worker environment before harness executable", launch)
 	}
 }
 
