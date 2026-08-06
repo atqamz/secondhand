@@ -247,10 +247,9 @@ func TestRefreshLeavesUpToDateFileOnDiskUntouched(t *testing.T) {
 	}
 }
 
-// This repo's own AGENTS.md points at generatedBody instead of keeping a
-// hand-maintained copy of it (atqamz/secondhand#44), so the only thing worth
-// asserting here is that the pointer survives - not the prose around it.
-func TestThisRepoAgentsMdPointsAtGeneratedBody(t *testing.T) {
+// The source checkout is also a dogfood fleet home, so its project-owned rules point at the
+// authority while its managed span stays current enough for initialization to be a no-op.
+func TestThisRepoAgentsMdIsCurrentForDogfood(t *testing.T) {
 	repoCopy, err := os.ReadFile(filepath.Join("..", "..", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -258,8 +257,12 @@ func TestThisRepoAgentsMdPointsAtGeneratedBody(t *testing.T) {
 	if !strings.Contains(string(repoCopy), "generatedBody") {
 		t.Fatalf("got repo AGENTS.md %q, want a pointer to generatedBody", repoCopy)
 	}
-	if strings.Contains(string(repoCopy), beginMarker) {
-		t.Fatalf("got repo AGENTS.md %q, want no generated-block markers: it is not a refresh target", repoCopy)
+	merged, err := mergeGenerated(string(repoCopy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged != string(repoCopy) {
+		t.Fatalf("got repo AGENTS.md %q, want its managed block already current", repoCopy)
 	}
 }
 

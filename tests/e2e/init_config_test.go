@@ -93,50 +93,151 @@ func TestInitAndSessionStartNeverBlockOnStdin(t *testing.T) {
 			if initialized.code != 0 {
 				t.Fatalf("hand init: exit %d, stderr %q", initialized.code, initialized.stderr)
 			}
-			if !strings.Contains(initialized.stdout, "config_missing: 1") {
-				t.Fatalf("init stdout = %q, want the unanswered harness reported", initialized.stdout)
-			}
 
-			session := runHandStdin(t, home, tc.stdin(t), "config")
+			session := runHandStdin(t, home, tc.stdin(t), "session", "start")
 			if session.code != 0 {
-				t.Fatalf("hand config: exit %d, stderr %q", session.code, session.stderr)
-			}
-			if bare := runHandStdin(t, home, tc.stdin(t)); bare.code != 0 {
-				t.Fatalf("bare hand: exit %d, stderr %q", bare.code, bare.stderr)
+				t.Fatalf("hand session start: exit %d, stderr %q", session.code, session.stderr)
 			}
 		})
 	}
 }
 
-// The whole first run through the built binary: bootstrap chooses nothing, the session document asks, the
-// answer is persisted, and what the chosen harness cannot carry is never asked about.
-func TestFirstRunConfigurationHappensAfterBootstrap(t *testing.T) {
+// This is the installed-binary first run: operator-owned instructions survive initialization, and the
+// generated block carries the next supervising session into the complete bootstrap document.
+func TestFirstRunInstalledCLIBootstrapsADetectedSession(t *testing.T) {
+	isolateGitConfig(t)
+	home := t.TempDir()
+	const preamble = "# My fleet\n\nKeep this project instruction.\n"
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(preamble), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initialized := runHandEnv(t, home, []string{"HAND_HARNESS=codex"}, "init")
+	if initialized.code != 0 {
+		t.Fatalf("hand init: exit %d, stderr %q", initialized.code, initialized.stderr)
+	}
+	agents, err := os.ReadFile(filepath.Join(home, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(agents), preamble) {
+		t.Fatalf("AGENTS.md = %q, want existing preamble %q preserved", agents, preamble)
+	}
+	for _, marker := range []string{"<!-- hand:generated:start -->", "<!-- hand:generated:end -->"} {
+		if count := strings.Count(string(agents), marker); count != 1 {
+			t.Fatalf("AGENTS.md contains %d copies of %q, want one appended managed block", count, marker)
+		}
+	}
+
+	session := runHandEnv(t, home, []string{"HAND_HARNESS=codex"}, "session", "start")
+	if session.code != 0 {
+		t.Fatalf("hand session start: exit %d, stderr %q", session.code, session.stderr)
+	}
+	for _, want := range []string{
+		"session_bootstrap: complete",
+		"supervisor_harness: codex",
+		"harness,detected,codex",
+		"model,native-default,none",
+		"hand project add",
+	} {
+		if !strings.Contains(session.stdout, want) {
+			t.Fatalf("session stdout = %q, want %q", session.stdout, want)
+		}
+	}
+}
+
+func TestSessionStartRefusesWorkerRole(t *testing.T) {
 	home := newHome(t)
-
-	before := runHand(t, home)
-	for _, want := range []string{"config_missing: 1", "harness,missing,none", "Ask the operator which harness"} {
-		if !strings.Contains(before.stdout, want) {
-			t.Fatalf("session document = %q, want it to contain %q", before.stdout, want)
-		}
+	got := runHandEnv(t, home, []string{"HAND_ROLE=worker"}, "session", "start")
+	assertInvocation(t, got, 3, "supervisor session bootstrap is unavailable when HAND_ROLE=worker")
+	if !strings.Contains(got.stderr, "kind: precondition") {
+		t.Fatalf("stderr = %q, want a precondition document", got.stderr)
 	}
+}
 
-	handConfigSet(t, home, "harness", "grok")
-	after := runHand(t, home)
-	for _, want := range []string{"config_missing: 0", "harness,configured,grok", "model,unsupported,none", "effort,unsupported,none"} {
-		if !strings.Contains(after.stdout, want) {
-			t.Fatalf("session document = %q, want it to contain %q", after.stdout, want)
-		}
-	}
-	if strings.Contains(after.stdout, "Ask the operator") {
-		t.Fatalf("session document = %q, want nothing left to ask about under grok", after.stdout)
+// Harness choice is a dispatch prerequisite, so spawn must refuse before either acquisition backend can
+// mutate external state.
+func TestSpawnWithUnknownHarnessRefusesBeforeAcquisition(t *testing.T) {
+	home := newHome(t)
+	registerProject(t, home, "demo", "local-only")
+	writeBrief(t, home, "task-1")
+	if err := os.MkdirAll(filepath.Join(home, "projects", "demo"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 
-	refused := runHand(t, home, "config", "set", "model", "gpt-5")
-	if refused.code != 2 {
-		t.Fatalf("config set model under grok: exit %d, want 2", refused.code)
+	invocationLog := filepath.Join(t.TempDir(), "acquisition.log")
+	body := "echo invoked >> " + shellSingleQuote(invocationLog) + "\nexit 99\n"
+	dir := binDir(t)
+	writeFakeBin(t, dir, "treehouse", body)
+	writeFakeBin(t, dir, "herdr", body)
+
+	got := runHandEnv(t, home, []string{"HAND_HARNESS=unknown"}, "spawn", "task-1", "demo", "--skip-gate-check")
+	assertInvocation(t, got, 3, "current supervisor harness is unknown")
+	if logged, err := os.ReadFile(invocationLog); err == nil {
+		t.Fatalf("acquisition log = %q, want treehouse and herdr untouched", logged)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "config", "model.grok")); err == nil {
-		t.Fatal("config/model.grok was written for a harness that takes no model flag")
+}
+
+func TestSourceCheckoutDogfoodBootstrap(t *testing.T) {
+	isolateGitConfig(t)
+	tracked, err := os.ReadFile(filepath.Join("..", "..", "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), tracked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initialized := runHandEnv(t, home, []string{"HAND_HARNESS=codex"}, "init")
+	if initialized.code != 0 {
+		t.Fatalf("hand init: exit %d, stderr %q", initialized.code, initialized.stderr)
+	}
+	if !strings.Contains(initialized.stdout, "agents_md: unchanged") {
+		t.Fatalf("init stdout = %q, want tracked AGENTS.md already current", initialized.stdout)
+	}
+	after, err := os.ReadFile(filepath.Join(home, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(tracked) {
+		t.Fatal("hand init changed the copied tracked AGENTS.md")
+	}
+
+	session := runHandEnv(t, home, []string{"HAND_HARNESS=codex"}, "session", "start")
+	if session.code != 0 {
+		t.Fatalf("hand session start: exit %d, stderr %q", session.code, session.stderr)
+	}
+	if !strings.Contains(session.stdout, "session_bootstrap: complete") {
+		t.Fatalf("session stdout = %q, want completed bootstrap", session.stdout)
+	}
+}
+
+func TestWorkerWorktreeNeverBootstrapsSupervisor(t *testing.T) {
+	home := newHome(t)
+	worktree := filepath.Join(home, "projects", "secondhand-worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	database := filepath.Join(home, "state", "hand.db")
+	before, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := runHandEnv(t, worktree, []string{"HAND_HOME=" + home, "HAND_ROLE=worker"}, "session", "start")
+	assertInvocation(t, got, 3, "supervisor session bootstrap is unavailable when HAND_ROLE=worker")
+	if _, err := os.Stat(filepath.Join(worktree, "state", "hand.db")); !os.IsNotExist(err) {
+		t.Fatalf("worker-local state/hand.db exists or cannot be checked: %v", err)
+	}
+	after, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("worker-role session start mutated the fleet database")
 	}
 }
 

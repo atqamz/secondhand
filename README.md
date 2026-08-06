@@ -9,18 +9,19 @@ It was born from [firstmate](https://github.com/kunchenguid/firstmate), an agent
 
 ## Quick start
 
-Install `hand` (see "Installation" below for every option), then create a fleet home and register a project:
+Install `hand` (see "Installation" below for every option), then create a fleet home:
 
 ```sh
 mkdir ~/fleet
 cd ~/fleet
 hand init
-hand project add https://github.com/org/repo
+# Launch any supported harness here; AGENTS.md tells it to run hand session start.
 ```
 
 `hand init` asks nothing.
-It creates runtime directories, skeleton files, `AGENTS.md` and a `.claude/settings.json` session hook under the current directory, and reports which worker defaults are still unset.
-Those defaults are settled in the first supervising session you open in the home: it reads the same report at session start and asks you for each missing value, then persists your answer with `hand config set <key> <value>`.
+It creates runtime directories, skeleton files, and a managed instruction block in `AGENTS.md`, with a `CLAUDE.md` symlink when that name is absent.
+The instructions make every supported supervising harness run `hand session start`, which loads the current fleet context and reports the first next action.
+That session can register a project with `hand project add <repo-url>` and persists any explicit worker overrides with `hand config set <key> <value>`.
 Nothing is guessed on your behalf, so a fleet home is never configured with a value you did not choose.
 
 A fleet home is a plain directory, anywhere on disk, unrelated to any project's own repo.
@@ -46,7 +47,7 @@ Set `HAND_HOME` to run `hand` from outside the fleet home, for example from a sc
 - **treehouse worktrees**: workers operate in isolated git checkouts acquired from a treehouse pool, never in the project clone itself.
 - **Backlog**: `data/backlog.md` is a plain markdown task queue, read and edited directly by the supervisory agent. Finished entries roll off into `data/done-archive.md`, dropped ones into `data/note-archive.md`.
 - **Operator context and learnings**: `data/operator.md` is written by the operator for the agent to read first - identity, authority, hard constraints - and `data/learnings.md` is the agent's own curated record of operational facts that cost real time to discover. The agent reads `data/operator.md` and never rewrites it, which is what lets its constraints outrank the agent's judgment. `hand init` seeds both, `hand update` seeds whichever an older home is missing, and neither ever overwrites one that exists; nothing under `data/` is maintained by hand for the operator to read, since `hand status` and the issue tracker are their view of the fleet.
-- **Ambient context**: `hand init` and `hand update` install `hand` as a Claude Code `SessionStart` hook in the home's `.claude/settings.json`, so a supervising session opens with the fleet overview already in context instead of spending a turn asking for it. The file is merged, never overwritten: an operator's own hooks and permissions survive every refresh, and hand owns at most one entry.
+- **Supervisor bootstrap**: `hand init` and `hand update` maintain one small `AGENTS.md` block that tells a supervising harness to run the read-only `hand session start`. Claude reads the same contract through `CLAUDE.md`; worker sessions are explicitly excluded.
 - **Agent-shaped output**: every command prints TOON on stdout - `key: value` fields, `name[N]{f1,f2}:` row blocks with pre-computed aggregates above them, and a `help[N]:` list of what to run next - because the consumer is an LLM agent rather than a human terminal, with `hand watch`'s per-line event stream as the one exception. `--fields` narrows a row block to the columns you name, `--json` retains its existing object, and a failure renders its own document on stderr carrying `error`, `kind` and `exit` so a caller branches on a word instead of a number.
 - **Machine state vs. the prose corpus**: machine state - tasks, PR state, pane ids, the project registry, holds - is authoritative in sqlite at `state/hand.db`. The prose under `data/` stays authoritative in files, with a derived full-text index at `state/index.db` that `hand search` reads and that is safe to delete at any time. When the database and a `state/<id>.status` file disagree about what a worker said, believe the file: it is readable without a working `hand`, which is what recovery has actually needed.
 
@@ -55,7 +56,7 @@ Set `HAND_HOME` to run `hand` from outside the fleet home, for example from a sc
 | Command | Description | Status |
 | --- | --- | --- |
 | `hand` | With no subcommand: name the binary that answered, its version and the fleet home it resolved, followed by the fleet overview `hand status` prints | Available |
-| `hand init` | Initialize runtime directories, skeleton files and the session hook; asks nothing and chooses no worker default | Available |
+| `hand init` | Initialize runtime directories, skeleton files and the managed supervisor instructions; asks nothing and chooses no worker default | Available |
 | `hand config` | Report the fleet's worker defaults and which of them are still missing; `hand config set <key> <value>` validates and persists one | Available |
 | `hand project add` | Clone and register a repository | Available |
 | `hand project list` | List registered projects | Available |
