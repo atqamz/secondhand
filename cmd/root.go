@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/atqamz/secondhand/internal/axi"
-	"github.com/atqamz/secondhand/internal/herdr"
 	"github.com/atqamz/secondhand/internal/home"
 	"github.com/atqamz/secondhand/internal/selfupdate"
 	"github.com/spf13/cobra"
@@ -21,12 +20,13 @@ func newRootCmd(version string) *cobra.Command {
 		Version: version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if fleetHome, err := home.Resolve(); err == nil {
-				if cmd.Name() != "init" {
+				startupOverview := cmd.Name() == "hand" || cmd.CommandPath() == "hand session start"
+				if cmd.Name() != "init" && !startupOverview {
 					if _, err := migrateWorkerSettings(fleetHome); err != nil {
 						return err
 					}
 				}
-				if cmd.Name() != "update" {
+				if cmd.Name() != "update" && !startupOverview {
 					if notice := selfupdate.CheckNotice(fleetHome, selfupdate.Repo, version); notice != "" {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), notice)
 					}
@@ -51,6 +51,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(newProjectCmd())
 	root.AddCommand(newSpawnCmd())
 	root.AddCommand(newStatusCmd())
+	root.AddCommand(newSessionCmd(version))
 	root.AddCommand(newSendCmd())
 	root.AddCommand(newHoldCmd())
 	root.AddCommand(newDeliverCmd())
@@ -88,6 +89,11 @@ func guardSubcommandGroups(c *cobra.Command) {
 // what a caller with nothing to go on needs first is the state, and `hand
 // --help` is still one word away for the reference.
 func runRootOverview(cmd *cobra.Command, version string) error {
+	fleetHome, err := home.Resolve()
+	if err == nil {
+		return renderSessionOverview(cmd, version, fleetHome)
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "unknown"
@@ -99,29 +105,9 @@ func runRootOverview(cmd *cobra.Command, version string) error {
 	doc.Field("version", version)
 	doc.Field("exec", tildePath(exe))
 
-	fleetHome, err := home.Resolve()
-	if err != nil {
-		doc.Field("home", "none")
-		doc.Help("Run `hand init` in the directory that should become the fleet home, or point HAND_HOME at one that already exists",
-			"Run `hand --help` for the command reference")
-		return doc.Render(cmd.OutOrStdout())
-	}
-	doc.Field("home", tildePath(fleetHome))
-
-	// This command is the session hook, so the fleet's configuration state reaches a supervising agent
-	// here or not at all: the questions it asks the operator are the ones this block reports missing.
-	cfg := readWorkerConfig(fleetHome)
-	appendWorkerConfig(&doc, cfg)
-
-	cols, err := pickFields(taskFields, nil, fleetDefaultFields)
-	if err != nil {
-		return err
-	}
-	views, holds, err := fleetViews(cmd, fleetHome, herdr.NewClient())
-	if err != nil {
-		return err
-	}
-	appendFleet(&doc, views, holds, cols, workerConfigHelp(cfg)...)
+	doc.Field("home", "none")
+	doc.Help("Run `hand init` in the directory that should become the fleet home, or point HAND_HOME at one that already exists",
+		"Run `hand --help` for the command reference")
 	return doc.Render(cmd.OutOrStdout())
 }
 

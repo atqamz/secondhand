@@ -10,8 +10,8 @@ import (
 
 	"github.com/atqamz/secondhand/internal/agentsmd"
 	"github.com/atqamz/secondhand/internal/axi"
+	"github.com/atqamz/secondhand/internal/project"
 	"github.com/atqamz/secondhand/internal/sessionhook"
-	"github.com/atqamz/secondhand/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -85,7 +85,7 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve the hand executable: %w", err)
 			}
-			hooked, err := sessionhook.Refresh(home, exe)
+			hookRemoved, err := sessionhook.Remove(home, exe)
 			if err != nil {
 				return err
 			}
@@ -98,14 +98,26 @@ func newInitCmd() *cobra.Command {
 			doc.Field("result", "initialized")
 			doc.Field("home", home)
 			doc.Field("agents_md", writtenOrUnchanged(refreshed))
-			doc.Field("session_hook", writtenOrUnchanged(hooked))
+			doc.Field("session_hook", removedOrUnchanged(hookRemoved))
 			doc.List("migrated", migrated)
-			appendWorkerConfig(&doc, readWorkerConfig(home))
+			cfg, err := currentWorkerConfig(home)
+			if err != nil {
+				return err
+			}
+			appendWorkerConfig(&doc, cfg)
 			doc.List("missing_tools", missingTools())
-			doc.Help("Start a supervising session in this home; it reports the worker defaults still missing and asks you for each one (`hand config set <key> <value>`)",
+			effectiveSettingsHelp := "Start a supervising session in this home; no supported worker harness is configured or detected, so it reports the unanswered harness choice"
+			switch cfg.settings[0].state {
+			case stateConfigured:
+				effectiveSettingsHelp = "Start a supervising session in this home; it uses the configured worker harness and any explicit model or effort overrides, with native defaults where unset"
+			case stateDetected:
+				effectiveSettingsHelp = "Start a supervising session in this home; it detects the current harness and uses its native model and effort defaults"
+			}
+			doc.Help(effectiveSettingsHelp,
+				"Run `hand config set <key> <value>` only to persist an explicit worker override",
 				"Read AGENTS.md in this home for how a supervising agent is meant to drive it",
 				"Run `hand project add <repo-url>` to register the first project",
-				"The session integration installed here is a Claude Code `SessionStart` hook, so a session opened with another harness reads AGENTS.md itself")
+				"AGENTS.md and its CLAUDE.md symlink carry the startup integration across harnesses")
 			return doc.Render(cmd.OutOrStdout())
 		},
 	}
@@ -126,6 +138,13 @@ func missingTools() []string {
 func writtenOrUnchanged(changed bool) string {
 	if changed {
 		return "written"
+	}
+	return "unchanged"
+}
+
+func removedOrUnchanged(changed bool) string {
+	if changed {
+		return "removed"
 	}
 	return "unchanged"
 }
@@ -179,15 +198,13 @@ func initSkeletonFiles(home string) error {
 	return errors.Join(errs...)
 }
 
-// Creates state/hand.db up front so home.IsHome's marker exists as soon as init returns, rather than
-// waiting for the first command that happens to touch machine state. store.Open is safe to call
-// repeatedly.
+// Creates or upgrades machine state up front so init is the explicit boundary for schema,
+// legacy task, and legacy project migrations. The composed operation is idempotent.
 func initMarker(home string) error {
-	db, err := store.Open(home)
-	if err != nil {
+	if err := project.Migrate(home); err != nil {
 		return fmt.Errorf("create state/hand.db: %w", err)
 	}
-	return db.Close()
+	return nil
 }
 
 func resolveInitHome(cwd string, args []string) (string, error) {

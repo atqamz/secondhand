@@ -17,3 +17,16 @@ This checkout is the tool's own source, not a fleet home itself - there is no `s
 ## Maintaining this file
 
 Keep knowledge useful to almost every future agent session. Point to authoritative code, tests, or commands instead of repeating them, and prefer rewriting or pruning existing entries over appending new ones.
+
+## Supervising from this checkout
+
+In a main session, when `HAND_ROLE` is not `worker`, bootstrap before responding or acting.
+If `state/hand.db` is absent, run `make build` in the documented Nix development environment and then `./hand init`.
+Run `./hand session start` after initialization and at the start of every later supervising session.
+
+<!-- hand:generated:start -->
+## Secondhand supervisor bootstrap
+
+Before responding or acting in a supervising session, run `hand session start`.
+Do not run supervisor bootstrap when `HAND_ROLE=worker`.
+<!-- hand:generated:end -->

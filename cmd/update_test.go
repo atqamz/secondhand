@@ -110,6 +110,18 @@ func setFakeExecutable(t *testing.T) string {
 	return execPath
 }
 
+func writeOwnedSessionHook(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/old/path/hand"},{"type":"command","command":"/usr/bin/custom"}]}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Every outcome renders the same seven fields, so a reader parses one schema
 // rather than a set of lines that appear or do not.
 func appliedUpdateDoc(agentsMD, sessionHook string, notes ...string) string {
@@ -135,6 +147,7 @@ func TestUpdateRefreshesWorkspaceAndReportsChanges(t *testing.T) {
 	home := t.TempDir()
 	t.Chdir(home)
 	mkFleetDirs(t, home)
+	writeOwnedSessionHook(t, home)
 
 	fixture := buildUpdateFixture(t, []byte("new binary contents"))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
@@ -148,7 +161,7 @@ func TestUpdateRefreshesWorkspaceAndReportsChanges(t *testing.T) {
 	}
 
 	got := out.String()
-	if want := appliedUpdateDoc("refreshed", "refreshed", "fixed the frobnicator"); got != want {
+	if want := appliedUpdateDoc("refreshed", "removed", "fixed the frobnicator"); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
@@ -156,8 +169,15 @@ func TestUpdateRefreshesWorkspaceAndReportsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agentsMD), "## Workflow") {
-		t.Fatalf("got %q, want AGENTS.md written with the workflow template", agentsMD)
+	if !strings.Contains(string(agentsMD), "## Secondhand supervisor bootstrap") {
+		t.Fatalf("got %q, want AGENTS.md written with the supervisor bootstrap", agentsMD)
+	}
+	settings, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(settings), "/old/path/hand") || !strings.Contains(string(settings), "/usr/bin/custom") {
+		t.Fatalf("settings = %q, want only the unrelated hook preserved", settings)
 	}
 }
 
@@ -283,6 +303,7 @@ func TestUpdateRefreshesHandHomeRatherThanWorkingDirectory(t *testing.T) {
 	setFakeExecutable(t)
 	fleetHome := t.TempDir()
 	mkFleetDirs(t, fleetHome)
+	writeOwnedSessionHook(t, fleetHome)
 	t.Setenv("HAND_HOME", fleetHome)
 	t.Chdir(t.TempDir())
 
@@ -298,7 +319,7 @@ func TestUpdateRefreshesHandHomeRatherThanWorkingDirectory(t *testing.T) {
 	}
 
 	got := out.String()
-	if want := appliedUpdateDoc("refreshed", "refreshed", "fixed the frobnicator"); got != want {
+	if want := appliedUpdateDoc("refreshed", "removed", "fixed the frobnicator"); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
@@ -306,8 +327,8 @@ func TestUpdateRefreshesHandHomeRatherThanWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agentsMD), "## Workflow") {
-		t.Fatalf("got %q, want AGENTS.md written with the workflow template", agentsMD)
+	if !strings.Contains(string(agentsMD), "## Secondhand supervisor bootstrap") {
+		t.Fatalf("got %q, want AGENTS.md written with the supervisor bootstrap", agentsMD)
 	}
 }
 
@@ -395,7 +416,7 @@ func TestUpdateDegradesGracefullyWithoutReleaseNotes(t *testing.T) {
 	}
 
 	got := out.String()
-	if want := appliedUpdateDoc("refreshed", "refreshed"); got != want {
+	if want := appliedUpdateDoc("refreshed", "unchanged"); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -427,11 +448,102 @@ func TestUpdateReportsVersionsWhenAgentsRefreshFails(t *testing.T) {
 	}
 
 	got := out.String()
-	if want := appliedUpdateDoc("failed", "refreshed", "fixed the frobnicator"); got != want {
+	if want := appliedUpdateDoc("failed", "unchanged", "fixed the frobnicator"); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	if !strings.Contains(errOut.String(), "warning: refresh AGENTS.md:") {
 		t.Fatalf("got stderr %q, want a refresh warning", errOut.String())
+	}
+}
+
+func TestUpdatePreservesOwnedSessionHookWhenAgentsRefreshFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("update binary layout targets unix asset names")
+	}
+	setFakeExecutable(t)
+	home := t.TempDir()
+	t.Chdir(home)
+	mkFleetDirs(t, home)
+	malformed := "<!-- hand:generated:start -->\n<!-- hand:generated:start -->\n<!-- hand:generated:end -->\n"
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(malformed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeOwnedSessionHook(t, home)
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := buildUpdateFixture(t, []byte("new binary contents"))
+	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
+
+	cmd := newUpdateCmd("v0.1.0")
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("got %v, want a successful binary update despite the refresh failure", err)
+	}
+
+	if want := appliedUpdateDoc("failed", "unchanged", "fixed the frobnicator"); out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+	if !strings.Contains(errOut.String(), "warning: refresh AGENTS.md:") {
+		t.Fatalf("stderr = %q, want the refresh warning", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "retire the session hook") {
+		t.Fatalf("stderr = %q, want no retirement attempt after refresh failed", errOut.String())
+	}
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("settings changed after refresh failure:\n got %s\nwant %s", after, before)
+	}
+}
+
+// The binary is already replaced before retirement runs, so malformed operator
+// settings produce a warning and a failed field without changing update success.
+func TestUpdateReportsVersionsWhenSessionHookRetirementFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("update binary layout targets unix asset names")
+	}
+	setFakeExecutable(t)
+	home := t.TempDir()
+	t.Chdir(home)
+	mkFleetDirs(t, home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := buildUpdateFixture(t, []byte("new binary contents"))
+	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
+
+	cmd := newUpdateCmd("v0.1.0")
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("got %v, want a successful update despite hook retirement failure", err)
+	}
+
+	if want := appliedUpdateDoc("refreshed", "failed", "fixed the frobnicator"); out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+	if !strings.Contains(errOut.String(), "warning: retire the session hook:") {
+		t.Fatalf("got stderr %q, want a retirement warning", errOut.String())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "{not json" {
+		t.Fatalf("settings = %q, %v, want invalid settings untouched", raw, err)
 	}
 }
 

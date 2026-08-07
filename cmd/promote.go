@@ -65,7 +65,14 @@ func newPromoteCmd() *cobra.Command {
 
 			harnessFromFlag := harnessName != ""
 			if !harnessFromFlag {
-				harnessName = configDefault(home, "harness", "claude")
+				cfg, err := currentWorkerConfig(home)
+				if err != nil {
+					return err
+				}
+				harnessName = cfg.harness
+				if harnessName == "" {
+					return &ExitError{Err: fmt.Errorf("current supervisor harness is unknown and no worker harness override is configured; run hand config set harness <name>"), Code: 3}
+				}
 			}
 			if !harness.IsSupported(harnessName) {
 				return usageValue(harnessFromFlag, fmt.Errorf("harness %q not recognized", harnessName))
@@ -137,6 +144,7 @@ func newPromoteCmd() *cobra.Command {
 			launchCmd, err := harness.Build(harnessName, harness.Options{
 				Worktree:            wt,
 				Brief:               briefAbs,
+				FleetHome:           home,
 				Model:               model,
 				Effort:              effort,
 				BriefHasFrontMatter: briefHasFrontMatter,
@@ -220,7 +228,7 @@ func newPromoteCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&harnessName, "harness", "", "harness for the new ship worker (default: config/harness, or claude)")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "harness for the new ship worker (default: config/harness, then the detected supervisor harness)")
 	cmd.Flags().StringVar(&model, "model", "", "model override for harnesses that support it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort override for harnesses that support it")
 	cmd.Flags().BoolVar(&skipGateCheck, "skip-gate-check", false, "dispatch even if the no-mistakes gate is not initialized, the clone path is missing from disk, or that path is not a git repository")

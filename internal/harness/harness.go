@@ -8,14 +8,18 @@ import (
 	"strings"
 
 	"github.com/atqamz/secondhand/internal/agentsmd"
+	"github.com/atqamz/secondhand/internal/shellquote"
 )
 
 const (
-	Claude   = "claude"
-	Codex    = "codex"
-	Grok     = "grok"
-	Pi       = "pi"
-	OpenCode = "opencode"
+	Claude     = "claude"
+	Codex      = "codex"
+	Grok       = "grok"
+	Pi         = "pi"
+	OpenCode   = "opencode"
+	RoleEnv    = "HAND_ROLE"
+	HomeEnv    = "HAND_HOME"
+	WorkerRole = "worker"
 )
 
 // The one list of supported harnesses. Anything that offers a choice of harness derives it from here
@@ -129,6 +133,7 @@ func AgentDetectionVerified(name string) bool {
 type Options struct {
 	Worktree            string
 	Brief               string
+	FleetHome           string
 	Model               string
 	Effort              string
 	BriefHasFrontMatter bool
@@ -189,7 +194,11 @@ func Build(name string, opts Options) (string, error) {
 	default:
 		return "", fmt.Errorf("harness %q not recognized", name)
 	}
-	return fmt.Sprintf("cd %s && %s", shellQuote(opts.Worktree), launch), nil
+	env := ""
+	if opts.FleetHome != "" {
+		env = RoleEnv + "=" + WorkerRole + " " + HomeEnv + "=" + shellQuote(opts.FleetHome) + " "
+	}
+	return fmt.Sprintf("cd %s && %s%s", shellQuote(opts.Worktree), env, launch), nil
 }
 
 // Launches claude interactively - no --print - so the pane stays resident for hand send and hand
@@ -260,5 +269,5 @@ func briefPrompt(o Options) string {
 }
 
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return shellquote.Quote(s)
 }

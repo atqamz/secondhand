@@ -12,6 +12,7 @@ import (
 
 	"github.com/atqamz/secondhand/internal/atomicfile"
 	"github.com/atqamz/secondhand/internal/home"
+	"github.com/atqamz/secondhand/internal/shellquote"
 )
 
 const (
@@ -22,9 +23,9 @@ const (
 	endMarker   = "<!-- hand:generated:end -->"
 )
 
-// OperatorDecisionRule is the one AGENTS.md rule a worker needs wherever it runs, and a
+// OperatorDecisionRule is the one supervisor rule a worker needs wherever it runs, and a
 // worktree is never under the fleet home, so it never loads the home's AGENTS.md.
-// internal/harness puts this string in the launch prompt and generatedBody embeds it.
+// internal/harness puts this string in the launch prompt and the session contract includes it.
 const OperatorDecisionRule = "Only a `hand send` message carries an operator decision. " +
 	"Answering your own harness's question dialog is you deciding, not the operator - " +
 	"never record that answer as \"operator said\" or \"operator chose\". " +
@@ -32,57 +33,39 @@ const OperatorDecisionRule = "Only a `hand send` message carries an operator dec
 	"`working: deciding myself: <the call> because <reason>` - " +
 	"and reserve `needs-decision:` for what you cannot take back."
 
-const generatedBody = `# Secondhand
+const generatedBody = `## Secondhand supervisor bootstrap
 
-You manage a fleet of coding agents using the ` + "`hand`" + ` CLI.
-Run ` + "`hand --help`" + ` for the full command reference.
-
-## Workflow
-
-1. Read ` + "`data/operator.md`" + ` before anything else. Its constraints outrank your own judgment.
-2. Settle any worker default the session overview's ` + "`config`" + ` block reports ` + "`missing`" + `, before dispatching anything: see "First-run configuration" below.
-3. Run ` + "`hand status`" + ` for current fleet state. A row marked ` + "`unacknowledged`" + ` is a worker that reached done or failed while nothing was watching; treat it as news that just arrived.
-4. Match the request to a project in ` + "`data/projects.md`" + `.
-5. Edit ` + "`data/backlog.md`" + ` to record the task with a unique ID.
-6. Write a brief at ` + "`data/<id>/brief.md`" + `, including the absolute path to ` + "`state/<id>.status`" + ` and the report vocabulary the worker should append to it. The brief may open with a ` + "`---`" + ` fenced block declaring ` + "`model`" + ` and ` + "`effort`" + ` for the task, which spawn and promote apply unless a flag overrides them.
-7. ` + "`hand spawn <id> <project>`" + ` to start a worker.
-8. ` + "`hand watch --until-event`" + ` as a background task to monitor the fleet. It exits on the first fleet event and that exit is what reaches you, so re-arm it every time you act on one. Bound the wait with ` + "`--timeout <duration>`" + `; exit 4 means the window passed with nothing happening, exit 5 means a worker named on stderr couldn't be reached before it even started waiting, exit 3 means another watcher is already attached to this home - one per home is the limit, so replace it with ` + "`--takeover`" + ` rather than starting a second.
-9. Act on watch output: steer blocked workers with ` + "`hand send`" + `, relay results.
-10. When told to merge: ` + "`hand merge <id>`" + `.
-11. ` + "`hand teardown <id>`" + ` after work is landed. Work that is handed off but whose landing is someone else's call - a PR offered to an upstream repo, a deliverable that is a report - is recorded with ` + "`hand deliver <id> --reason <text>`" + ` first; teardown then accepts it without ` + "`--force`" + `, and the completion record says delivered rather than merged.
-
-## First-run configuration
-
-The session overview's ` + "`config`" + ` block is what this fleet dispatches with, and every value in it is the operator's to choose.
-
-- A setting reported ` + "`missing`" + ` is a question you ask the operator in this conversation, in plain words, offering what ` + "`hand config`" + ` lists as supported and installed. Persist their answer with ` + "`hand config set <key> <value>`" + `, which validates it and writes it atomically; never write anything under ` + "`config/`" + ` yourself.
-- Never answer one of these for the operator. A value you picked, or one your own harness dialog accepted, configures the fleet with a guess that afterwards looks exactly like their decision.
-- ` + "`hand config set`" + ` reprints the block, so read what it returns and keep asking until nothing is ` + "`missing`" + `. ` + "`hand config`" + ` re-reads it at any time.
-- ` + "`unsupported`" + ` means the selected harness takes no such launch flag, so it is not a question and not a gap. ` + "`pending-harness`" + ` means applicability is unknown until the harness is chosen, so choose that first.
-- An operator who declines to answer has answered: leave it missing, say so, and carry on with everything that does not need it. The next session asks again.
-
-## Rules
-
-- Every command prints TOON on stdout: ` + "`key: value`" + ` lines, ` + "`name[N]{f1,f2}:`" + ` blocks with one comma-joined row per line, and a ` + "`help[N]:`" + ` list of next steps worth taking. A count of ` + "`0`" + ` and an empty block are an answer, not a failure.
-- A failure always writes one document to stderr: ` + "`error`" + `, ` + "`kind`" + ` (general, usage, precondition, no-event, arm-failed, send-undelivered) and ` + "`exit`" + `. Branch on ` + "`kind`" + ` rather than matching the message text. A command that already produced output keeps it, so ` + "`hand doctor`" + `'s findings and ` + "`hand watch`" + `'s events are on stdout whatever the exit code.
-- The fleet overview at the top of this session is a ` + "`hand`" + ` session hook, so it is a snapshot taken before you did anything. Re-read it with ` + "`hand status`" + ` once you have acted.
-- Never edit files under ` + "`projects/`" + `. Workers do that in worktrees.
-- Never merge without explicit authorization.
-- Never force-teardown without explicit authorization. ` + "`--force`" + ` is for work nobody delivered; ` + "`hand deliver`" + ` is the answer for work that is delivered and not landed.
-- Report outcomes plainly. If work failed, say so with evidence.
-- ` + OperatorDecisionRule + `
-- Waiting on the operator or on another task: ` + "`hand hold set <id> --kind operator --reason <text>`" + ` or ` + "`--kind blocked --reason <text> --blocked-on <id>`" + `, and ` + "`hand hold clear <id>`" + ` once resolved.
-- Name a path in a brief, a status report, or an operator message: full and absolute, never relative. ` + "`hand`" + ` resolves the home from ` + "`HAND_HOME`" + ` or the nearest fleet home at or above the working directory, and a project clone can share its name with the home itself, so a relative path resolves against whichever directory happens to be current.
-- Ship tasks produce PRs or local branches. Scout tasks produce ` + "`data/<id>/report.md`" + `.
-- ` + "`data/operator.md`" + ` is the operator's file, not yours. Read it, never rewrite it: one-way ownership is what lets its constraints outrank your judgment.
-- ` + "`data/backlog.md`" + ` is your task queue. Edit it directly.
-- Roll finished backlog entries into ` + "`data/done-archive.md`" + `, and dropped or superseded ones into ` + "`data/note-archive.md`" + ` with the reason they were dropped. Roll off rather than delete: the queue you read at session start stays short and the record survives.
-- ` + "`data/learnings.md`" + ` holds dated, evidence-backed operational facts. Read it when a task touches something it covers, add to it when a discovery cost real time, and curate it - rewrite and prune rather than append forever.
-- Nothing under ` + "`data/`" + ` is written for the operator to read. Report to them in the session; ` + "`hand status`" + ` and the issue tracker are their view of the fleet, so a decision taken under a standing grant belongs on the PR or issue it concerns, not in a fleet file.
-- For no-mistakes projects, workers use ` + "`no-mistakes axi`" + ` directly in the worktree.
-- Use ` + "`hand search <query>`" + ` to find historical context in data/. ` + "`qmd search`" + ` adds semantic matching when installed.
-- ` + "`hand status <id>`" + ` shows a worker's reported state. Workers report with ` + "`working:`" + `, ` + "`paused:`" + `, ` + "`blocked:`" + `, ` + "`needs-decision:`" + `, ` + "`done:`" + `, or ` + "`failed:`" + `.
+Before responding or acting in a supervising session, run ` + "`hand session start`" + `.
+Do not run supervisor bootstrap when ` + "`HAND_ROLE=worker`" + `.
 `
+
+var supervisorInstructions = []string{
+	"Read `data/operator.md` before anything else. Its constraints outrank your own judgment.",
+	"Match the request to a project in `data/projects.md`.",
+	"Edit `data/backlog.md` to record the task with a unique ID.",
+	"Write a brief at `data/<id>/brief.md`, including the absolute path to `state/<id>.status` and the report vocabulary the worker should append to it.",
+	"`hand status <id>` shows a worker's reported state. Workers report with `working:`, `paused:`, `blocked:`, `needs-decision:`, `done:`, or `failed:`.",
+	"Run `hand watch --until-event` as a background task to monitor the fleet. It exits on the first fleet event and that exit is what reaches you, so re-arm it every time you act on one.",
+	"Never merge without explicit authorization.",
+	"Run `hand teardown <id>` after work is landed. Work that is handed off but whose landing is someone else's call is recorded with `hand deliver <id> --reason <text>` first.",
+	"Never edit files under `projects/`. Workers do that in worktrees.",
+	"Never force-teardown without explicit authorization. `--force` is for work nobody delivered; `hand deliver` is the answer for work that is delivered and not landed.",
+	"Name a path in a brief, a status report, or an operator message: full and absolute, never relative.",
+	"Waiting on the operator or on another task: `hand hold set <id> --kind operator --reason <text>` or `--kind blocked --reason <text> --blocked-on <id>`, and `hand hold clear <id>` once resolved.",
+	"`data/operator.md` is the operator's file, not yours. Read it, never rewrite it: one-way ownership is what lets its constraints outrank your judgment.",
+	"`data/backlog.md` is your task queue. Edit it directly.",
+	"Roll finished backlog entries into `data/done-archive.md`, and dropped or superseded ones into `data/note-archive.md` with the reason they were dropped. Roll off rather than delete.",
+	"`data/learnings.md` holds dated, evidence-backed operational facts. Read it when a task touches something it covers, add to it when a discovery cost real time, and curate it - rewrite and prune rather than append forever.",
+	OperatorDecisionRule,
+	"Every command prints TOON on stdout: `key: value` lines, `name[N]{f1,f2}:` blocks with one comma-joined row per line, and a `help[N]:` list. A count of `0` and an empty block are an answer, not a failure.",
+	"A failure always writes one document to stderr: `error`, `kind`, and `exit`. Branch on `kind` rather than matching the message text. A command that already produced output keeps it on stdout.",
+	"Nothing under `data/` is written for the operator to read. Report to them in the session.",
+}
+
+// Returns an isolated copy of the durable operating contract.
+func SupervisorInstructions() []string {
+	return append([]string(nil), supervisorInstructions...)
+}
 
 // Refresh writes or refreshes dir/AGENTS.md and its CLAUDE.md symlink, reporting whether
 // the template content changed (false, nil when dir is not a fleet home, which is not an
@@ -106,7 +89,10 @@ func Refresh(dir string) (bool, error) {
 	case err != nil:
 		return false, fmt.Errorf("read %s: %w", filename, err)
 	default:
-		target = mergeGenerated(string(existing))
+		target, err = mergeGenerated(string(existing))
+		if err != nil {
+			return false, err
+		}
 	}
 
 	refreshed := false
@@ -133,20 +119,36 @@ func generatedBlock() string {
 	return beginMarker + "\n" + generatedBody + endMarker + "\n"
 }
 
-// Replaces the span between the generated markers with the current template, leaving
-// everything before and after untouched. A file with no markers (never refreshed by this
-// mechanism) is left as-is rather than risk clobbering hand-written content.
-func mergeGenerated(content string) string {
+// A valid marked span is replaced, while an unmarked file gets a safely separated append.
+// Ambiguous marker ownership is rejected before Refresh performs any write.
+func mergeGenerated(content string) (string, error) {
+	startCount := strings.Count(content, beginMarker)
+	endCount := strings.Count(content, endMarker)
+	switch {
+	case startCount == 0 && endCount == 0:
+		separator := ""
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			separator = "\n"
+		}
+		if content != "" {
+			separator += "\n"
+		}
+		return content + separator + generatedBlock(), nil
+	case startCount != 1 || endCount != 1:
+		return "", fmt.Errorf("AGENTS.md has malformed or duplicate hand:generated markers")
+	}
 	start, end, ok := generatedBlockSpan(content)
 	if !ok {
-		return content
+		return "", fmt.Errorf("AGENTS.md has malformed hand:generated markers")
 	}
-	return content[:start] + strings.TrimSuffix(generatedBlock(), "\n") + content[end:]
+	return content[:start] + strings.TrimSuffix(generatedBlock(), "\n") + content[end:], nil
 }
 
-// Returns the byte range of the generated block, markers included, or ok=false when the
-// markers are absent or malformed (an end marker missing, or before any begin marker).
+// The returned byte range includes both markers and exists only for one ordered pair.
 func generatedBlockSpan(content string) (start, end int, ok bool) {
+	if strings.Count(content, beginMarker) != 1 || strings.Count(content, endMarker) != 1 {
+		return 0, 0, false
+	}
 	start = strings.Index(content, beginMarker)
 	if start == -1 {
 		return 0, 0, false
@@ -156,6 +158,23 @@ func generatedBlockSpan(content string) (start, end int, ok bool) {
 		return 0, 0, false
 	}
 	return start, start + relEnd + len(endMarker), true
+}
+
+func markerOffsets(content, marker string) []int {
+	var offsets []int
+	for searchFrom := 0; ; {
+		rel := strings.Index(content[searchFrom:], marker)
+		if rel == -1 {
+			return offsets
+		}
+		offset := searchFrom + rel
+		offsets = append(offsets, offset)
+		searchFrom = offset + len(marker)
+	}
+}
+
+func lineAtOffset(content string, offset int) int {
+	return strings.Count(content[:offset], "\n") + 1
 }
 
 var (
@@ -174,7 +193,7 @@ var (
 
 // Severity distinguishes a Violation that fails hand doctor from one that is
 // informational: real and worth a human's attention, but not something the checker can
-// resolve into a pass/fail verdict on its own. Absent markers are the only case so far.
+// resolve into a pass/fail verdict on its own.
 type Severity int
 
 const (
@@ -192,7 +211,7 @@ type Violation struct {
 }
 
 // Check reports perishable content, malformed fences, and generated-block drift or absence without
-// fixing any of it. A nil result with no error means no fleet home or no file.
+// fixing any of it. A nil result with no error means the directory is not a fleet home.
 func Check(dir string) ([]Violation, error) {
 	isHome, err := home.IsHome(dir)
 	if err != nil {
@@ -204,15 +223,42 @@ func Check(dir string) ([]Violation, error) {
 
 	data, err := os.ReadFile(filepath.Join(dir, filename))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return []Violation{{Text: fmt.Sprintf("AGENTS.md is missing: run hand init %s to restore the current generated block", shellquote.Quote(dir))}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", filename, err)
 	}
 	content := string(data)
+	startOffsets := markerOffsets(content, beginMarker)
+	endOffsets := markerOffsets(content, endMarker)
 	blockStart, blockEnd, hasBlock := generatedBlockSpan(content)
 
 	var violations []Violation
+	switch {
+	case len(startOffsets) == 0 && len(endOffsets) == 0:
+		violations = append(violations, Violation{
+			Text: fmt.Sprintf("no hand:generated markers: run hand init %s to append the current generated block", shellquote.Quote(dir)),
+		})
+	case len(startOffsets) == 0:
+		for _, offset := range endOffsets {
+			violations = append(violations, Violation{Line: lineAtOffset(content, offset), Text: "unpaired hand:generated end marker"})
+		}
+	case len(endOffsets) == 0:
+		for _, offset := range startOffsets {
+			violations = append(violations, Violation{Line: lineAtOffset(content, offset), Text: "unpaired hand:generated start marker"})
+		}
+	default:
+		for _, offset := range startOffsets[1:] {
+			violations = append(violations, Violation{Line: lineAtOffset(content, offset), Text: "duplicate hand:generated start marker"})
+		}
+		for _, offset := range endOffsets[1:] {
+			violations = append(violations, Violation{Line: lineAtOffset(content, offset), Text: "duplicate hand:generated end marker"})
+		}
+		if endOffsets[0] < startOffsets[0] {
+			violations = append(violations, Violation{Line: lineAtOffset(content, endOffsets[0]), Text: "hand:generated end marker appears before start marker"})
+		}
+	}
+
 	inFence := false
 	fenceOpenedAt := 0
 	offset := 0
@@ -252,16 +298,8 @@ func Check(dir string) ([]Violation, error) {
 		violations = append(violations, Violation{Line: fenceOpenedAt, Text: "unterminated code fence: every date and self-expiring check after this line was skipped"})
 	}
 
-	switch {
-	case !hasBlock:
-		// Info rather than a failure: a file left marker-less by accident is indistinguishable from one
-		// left that way on purpose (atqamz/secondhand#90).
-		violations = append(violations, Violation{
-			Text:     "no hand:generated markers: hand init and hand update leave a marker-less file alone, so this template can never refresh itself here - paste the current generated block back in if that is unintended, or ignore this finding if the file is deliberately hand-authored",
-			Severity: SeverityInfo,
-		})
-	case content[blockStart:blockEnd] != strings.TrimSuffix(generatedBlock(), "\n"):
-		violations = append(violations, Violation{Text: fmt.Sprintf("generated block has drifted from generatedBody: run hand init %s to refresh", dir)})
+	if hasBlock && content[blockStart:blockEnd] != strings.TrimSuffix(generatedBlock(), "\n") {
+		violations = append(violations, Violation{Text: fmt.Sprintf("generated block has drifted from generatedBody: run hand init %s to refresh", shellquote.Quote(dir))})
 	}
 
 	return violations, nil

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atqamz/secondhand/internal/store"
 )
 
 func TestDeriveName(t *testing.T) {
@@ -163,6 +165,70 @@ func TestListMissingFile(t *testing.T) {
 	if projects != nil {
 		t.Errorf("got %+v, want nil", projects)
 	}
+}
+
+func TestMigrateWithoutProjectsDefersTheOneTimeLegacyImport(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		seed string
+	}{
+		{name: "missing registry"},
+		{name: "empty registry", seed: "# Projects\n\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if test.seed != "" {
+				writeRegistry(t, dir, test.seed)
+			}
+			if err := Migrate(dir); err != nil {
+				t.Fatal(err)
+			}
+			if projectMigrationDone(t, dir) {
+				t.Fatal("migration without a project consumed the future legacy import")
+			}
+
+			writeRegistry(t, dir, "# Projects\n\n- first: local mode=local-only\n")
+			if err := Migrate(dir); err != nil {
+				t.Fatal(err)
+			}
+			projects, err := ListReadOnly(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(projects) != 1 || projects[0].Name != "first" {
+				t.Fatalf("projects after the first real import = %+v, want first", projects)
+			}
+			if !projectMigrationDone(t, dir) {
+				t.Fatal("non-empty legacy registry was imported without recording completion")
+			}
+
+			writeRegistry(t, dir, "# Projects\n\n- first: local mode=local-only\n- second: local mode=local-only\n")
+			if err := Migrate(dir); err != nil {
+				t.Fatal(err)
+			}
+			projects, err = ListReadOnly(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(projects) != 1 || projects[0].Name != "first" {
+				t.Fatalf("projects after repeat migration = %+v, want the first import exactly once", projects)
+			}
+		})
+	}
+}
+
+func projectMigrationDone(t *testing.T, dir string) bool {
+	t.Helper()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	done, err := db.Migrated(legacyRegistryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return done
 }
 
 func TestListRejectsMalformedLine(t *testing.T) {

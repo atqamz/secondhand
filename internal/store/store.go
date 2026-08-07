@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atqamz/secondhand/internal/shellquote"
 	_ "modernc.org/sqlite"
 )
 
@@ -248,6 +249,34 @@ func Open(homeDir string) (*DB, error) {
 	if err := db.migrateLegacy(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
+	}
+	return db, nil
+}
+
+// Presentation readers use an existing-file handle so SELECTs cannot create schema or
+// import legacy state. An older layout has to cross an explicit migration boundary first.
+func OpenReadOnly(homeDir string) (*DB, error) {
+	path := Path(homeDir)
+	uri := "file:" + (&url.URL{Path: path}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=query_only(1)"
+	sqlDB, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, fmt.Errorf("open %s read-only: %w", path, err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	db := &DB{sql: sqlDB, home: homeDir}
+	current, err := db.schemaVersion()
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	latest := len(migrations)
+	if err := schemaVersionError(current, latest); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	if current < latest {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("state/hand.db is schema version %d, older than this build of hand requires (version %d) - run `hand init %s` before opening it read-only", current, latest, shellquote.Quote(homeDir))
 	}
 	return db, nil
 }

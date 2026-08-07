@@ -1,17 +1,16 @@
-// Package sessionhook installs hand as a Claude Code SessionStart hook in a
-// fleet home, so a supervising agent's session opens with the fleet already in
-// context instead of spending a turn asking for it.
+// Package sessionhook retires Secondhand-owned Claude Code SessionStart hooks.
 package sessionhook
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/atqamz/secondhand/internal/atomicfile"
-	"github.com/atqamz/secondhand/internal/home"
 )
 
 const (
@@ -21,31 +20,35 @@ const (
 	toolName     = "hand"
 )
 
-// Installs or repoints the hook in dir/.claude/settings.json and reports
-// whether the file changed. A dir that is not a fleet home is not an error:
-// nothing there runs a supervising session.
-func Refresh(dir, exe string) (bool, error) {
-	isHome, err := home.IsHome(dir)
-	if err != nil {
-		return false, err
-	}
-	if !isHome {
-		return false, nil
-	}
-
+// Removes owned hooks from dir/.claude/settings.json and reports whether the
+// file changed. A missing settings file is already retired.
+func Remove(dir, exe string) (bool, error) {
 	path := filepath.Join(dir, settingsDir, settingsFile)
 	existing, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
 		return false, fmt.Errorf("read %s: %w", relPath(), err)
 	}
 
-	settings := map[string]any{}
-	if len(existing) > 0 {
-		if err := json.Unmarshal(existing, &settings); err != nil {
-			return false, fmt.Errorf("parse %s: %w", relPath(), err)
-		}
+	var settings map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(existing))
+	decoder.UseNumber()
+	if err := decoder.Decode(&settings); err != nil {
+		return false, fmt.Errorf("parse %s: %w", relPath(), err)
 	}
-	changed, err := install(settings, exe)
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		return false, fmt.Errorf("parse %s: %w", relPath(), err)
+	}
+	if settings == nil {
+		return false, fmt.Errorf("%s: settings is not an object, refusing to overwrite it", relPath())
+	}
+	changed, err := remove(settings, exe)
 	if err != nil || !changed {
 		return false, err
 	}
@@ -55,9 +58,6 @@ func Refresh(dir, exe string) (bool, error) {
 		return false, err
 	}
 	encoded = append(encoded, '\n')
-	if err := os.MkdirAll(filepath.Join(dir, settingsDir), 0o755); err != nil {
-		return false, fmt.Errorf("create %s: %w", settingsDir, err)
-	}
 	if err := atomicfile.Write(path, ".settings.json-", encoded, 0o644); err != nil {
 		return false, fmt.Errorf("write %s: %w", relPath(), err)
 	}
@@ -68,10 +68,9 @@ func relPath() string {
 	return filepath.Join(settingsDir, settingsFile)
 }
 
-// Edits settings in place and reports whether anything changed. Everything it
-// does not own is carried through untouched: an operator's own hooks,
-// permissions and settings outlive every refresh.
-func install(settings map[string]any, exe string) (bool, error) {
+// Edits settings in place while carrying every unrelated matcher, hook, and
+// setting through untouched.
+func remove(settings map[string]any, exe string) (bool, error) {
 	hooks, err := object(settings, "hooks", "hooks")
 	if err != nil {
 		return false, err
@@ -81,31 +80,70 @@ func install(settings map[string]any, exe string) (bool, error) {
 		return false, err
 	}
 
-	for _, matcher := range matchers {
-		entry, _ := matcher.(map[string]any)
-		commands, _ := entry["hooks"].([]any)
-		for _, c := range commands {
-			command, _ := c.(map[string]any)
-			line, _ := command["command"].(string)
-			args, ok := handArgs(line, exe)
+	filteredMatchers := make([]any, 0, len(matchers))
+	changed := false
+	for i, matcher := range matchers {
+		entry, ok := matcher.(map[string]any)
+		if !ok {
+			return false, fmt.Errorf("%s: hooks.%s[%d] is not an object, refusing to overwrite it", relPath(), event, i)
+		}
+		commands, err := array(entry, "hooks", fmt.Sprintf("hooks.%s[%d].hooks", event, i))
+		if err != nil {
+			return false, err
+		}
+		filteredCommands := make([]any, 0, len(commands))
+		matcherChanged := false
+		for j, hook := range commands {
+			command, ok := hook.(map[string]any)
 			if !ok {
+				return false, fmt.Errorf("%s: hooks.%s[%d].hooks[%d] is not an object, refusing to overwrite it", relPath(), event, i, j)
+			}
+			rawType, exists := command["type"]
+			if !exists {
+				filteredCommands = append(filteredCommands, hook)
 				continue
 			}
-			// An operator who added arguments keeps them; only the path to the
-			// binary is ours to correct, which is what a moved install needs.
-			repointed := exe + args
-			if repointed == line {
-				return false, nil
+			hookType, ok := rawType.(string)
+			if !ok {
+				return false, fmt.Errorf("%s: hooks.%s[%d].hooks[%d].type is not a string, refusing to overwrite it", relPath(), event, i, j)
 			}
-			command["command"] = repointed
-			return true, nil
+			if hookType != "command" {
+				filteredCommands = append(filteredCommands, hook)
+				continue
+			}
+			raw, exists := command["command"]
+			if !exists {
+				filteredCommands = append(filteredCommands, hook)
+				continue
+			}
+			line, ok := raw.(string)
+			if !ok {
+				return false, fmt.Errorf("%s: hooks.%s[%d].hooks[%d].command is not a string, refusing to overwrite it", relPath(), event, i, j)
+			}
+			if _, owned := handArgs(line, exe); owned {
+				matcherChanged = true
+				changed = true
+				continue
+			}
+			filteredCommands = append(filteredCommands, hook)
+		}
+		if !matcherChanged {
+			filteredMatchers = append(filteredMatchers, matcher)
+			continue
+		}
+		if len(filteredCommands) > 0 {
+			entry["hooks"] = filteredCommands
+			filteredMatchers = append(filteredMatchers, matcher)
 		}
 	}
-
-	hooks[event] = append(matchers, map[string]any{
-		"hooks": []any{map[string]any{"type": "command", "command": exe}},
-	})
-	settings["hooks"] = hooks
+	if !changed {
+		return false, nil
+	}
+	if len(filteredMatchers) == 0 {
+		delete(hooks, event)
+	} else {
+		hooks[event] = filteredMatchers
+	}
 	return true, nil
 }
 
@@ -137,8 +175,7 @@ func array(m map[string]any, key, path string) ([]any, error) {
 }
 
 // Splits a hook command into whatever follows the binary it runs. An entry is
-// ours when it names this binary or any binary called hand, so a moved install
-// is repointed rather than duplicated.
+// ours when it names this binary or any binary called hand.
 func handArgs(line, exe string) (string, bool) {
 	trimmed := strings.TrimLeft(line, " \t")
 	first := trimmed

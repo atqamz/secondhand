@@ -2,6 +2,7 @@ package agentsmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,8 +55,13 @@ func TestRefreshWritesAgentsMdAndClaudeSymlinkWhenMissing(t *testing.T) {
 	if !strings.Contains(string(got), beginMarker) || !strings.Contains(string(got), endMarker) {
 		t.Fatalf("got %q, want generated markers present", got)
 	}
-	if !strings.Contains(string(got), "## Workflow") || !strings.Contains(string(got), "## Rules") {
-		t.Fatalf("got %q, want Workflow and Rules sections", got)
+	if !strings.Contains(string(got), "## Secondhand supervisor bootstrap") ||
+		!strings.Contains(string(got), "hand session start") ||
+		!strings.Contains(string(got), "HAND_ROLE=worker") {
+		t.Fatalf("got %q, want the compact supervisor bootstrap", got)
+	}
+	if strings.Contains(string(got), "## Workflow") || strings.Contains(string(got), "## Rules") {
+		t.Fatalf("got %q, want no durable operating manual in the managed block", got)
 	}
 
 	link, err := os.Readlink(filepath.Join(dir, "CLAUDE.md"))
@@ -67,17 +73,13 @@ func TestRefreshWritesAgentsMdAndClaudeSymlinkWhenMissing(t *testing.T) {
 	}
 }
 
-func TestRefreshWritesReportVocabularyIntoFleetWorkflow(t *testing.T) {
-	dir := makeWorkspace(t)
-	if _, err := Refresh(dir); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestSupervisorInstructionsCoverDurableOperatingContract(t *testing.T) {
+	got := strings.Join(SupervisorInstructions(), "\n")
 	for _, want := range []string{
+		"data/operator.md",
+		"data/projects.md",
+		"data/backlog.md",
+		"data/<id>/brief.md",
 		"state/<id>.status",
 		"working:",
 		"paused:",
@@ -85,10 +87,31 @@ func TestRefreshWritesReportVocabularyIntoFleetWorkflow(t *testing.T) {
 		"needs-decision:",
 		"done:",
 		"failed:",
+		"re-arm",
+		"Never merge without explicit authorization",
+		"hand deliver",
+		"Never edit files under `projects/`",
+		"full and absolute, never relative",
+		"hand hold set",
+		"hand hold clear",
+		"data/done-archive.md",
+		"data/note-archive.md",
+		"data/learnings.md",
+		"Only a `hand send` message carries an operator decision",
+		"TOON",
+		"Branch on `kind`",
 	} {
-		if !strings.Contains(string(got), want) {
-			t.Fatalf("got generated AGENTS.md %q, want report contract %q", got, want)
+		if !strings.Contains(got, want) {
+			t.Fatalf("got supervisor instructions %q, want durable rule %q", got, want)
 		}
+	}
+}
+
+func TestSupervisorInstructionsReturnsClone(t *testing.T) {
+	first := SupervisorInstructions()
+	first[0] = "changed by caller"
+	if got := SupervisorInstructions()[0]; got == "changed by caller" {
+		t.Fatal("SupervisorInstructions exposed mutable package state")
 	}
 }
 
@@ -123,42 +146,73 @@ func TestRefreshPreservesUserAddedContentAcrossRefresh(t *testing.T) {
 	if !strings.HasSuffix(string(got), userContent) {
 		t.Fatalf("got %q, want user content after the markers preserved verbatim", got)
 	}
-	if !strings.Contains(string(got), "## Workflow") {
-		t.Fatalf("got %q, want the current generated Workflow section", got)
+	if !strings.Contains(string(got), "## Secondhand supervisor bootstrap") {
+		t.Fatalf("got %q, want the current generated bootstrap", got)
 	}
 	if strings.Contains(string(got), "An out-of-date template.") {
 		t.Fatalf("got %q, want the stale generated block replaced", got)
 	}
 }
 
-func TestRefreshLeavesUnmarkedAgentsMdUntouched(t *testing.T) {
-	dir := makeWorkspace(t)
-	path := filepath.Join(dir, "AGENTS.md")
-	handWritten := "# Hand-written AGENTS.md with no generated markers\n"
-	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestRefreshAppendsManagedBlockToUnmarkedAgentsMd(t *testing.T) {
+	for name, original := range map[string]string{
+		"trailing newline":    "# Project rules\n\nKeep this byte-for-byte.\n",
+		"no trailing newline": "# Project rules\n\nKeep this byte-for-byte.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := makeWorkspace(t)
+			path := filepath.Join(dir, "AGENTS.md")
+			if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	refreshed, err := Refresh(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refreshed {
-		t.Fatal("got refreshed=true, want false when the template was not updated")
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != handWritten {
-		t.Fatalf("got %q, want unchanged %q", got, handWritten)
+			changed, err := Refresh(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !changed || !strings.HasPrefix(string(got), original) || !strings.Contains(string(got), beginMarker) {
+				t.Fatalf("got %q, want unchanged prefix plus managed block", got)
+			}
+		})
 	}
 }
 
-// A marker-less legacy AGENTS.md, or one already carrying the current template,
-// must not be rewritten at all: an identical-bytes write still swaps the inode,
-// resets the mode, and turns a symlinked AGENTS.md into a regular file.
+func TestRefreshRefusesDuplicateReversedOrUnpairedMarkersWithoutWrites(t *testing.T) {
+	for name, content := range map[string]string{
+		"missing end": beginMarker + "\nmissing end\n",
+		"end only":    endMarker + "\n",
+		"reversed":    endMarker + "\n" + beginMarker + "\n",
+		"duplicate":   generatedBlock() + generatedBlock(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := makeWorkspace(t)
+			path := filepath.Join(dir, "AGENTS.md")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Refresh(dir); err == nil {
+				t.Fatal("Refresh succeeded, want malformed-marker error")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != content {
+				t.Fatalf("got %q, want unchanged %q", got, content)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+				t.Fatalf("got CLAUDE.md change after malformed input, err=%v", err)
+			}
+		})
+	}
+}
+
+// An already-current AGENTS.md must not be rewritten at all: an identical-bytes write
+// still swaps the inode, resets the mode, and turns a symlink into a regular file.
 func TestRefreshLeavesUpToDateFileOnDiskUntouched(t *testing.T) {
 	dir := makeWorkspace(t)
 	path := filepath.Join(dir, "AGENTS.md")
@@ -194,10 +248,9 @@ func TestRefreshLeavesUpToDateFileOnDiskUntouched(t *testing.T) {
 	}
 }
 
-// This repo's own AGENTS.md points at generatedBody instead of keeping a
-// hand-maintained copy of it (atqamz/secondhand#44), so the only thing worth
-// asserting here is that the pointer survives - not the prose around it.
-func TestThisRepoAgentsMdPointsAtGeneratedBody(t *testing.T) {
+// The source checkout is also a dogfood fleet home, so its project-owned rules point at the
+// authority while its managed span stays current enough for initialization to be a no-op.
+func TestThisRepoAgentsMdIsCurrentForDogfood(t *testing.T) {
 	repoCopy, err := os.ReadFile(filepath.Join("..", "..", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -205,8 +258,12 @@ func TestThisRepoAgentsMdPointsAtGeneratedBody(t *testing.T) {
 	if !strings.Contains(string(repoCopy), "generatedBody") {
 		t.Fatalf("got repo AGENTS.md %q, want a pointer to generatedBody", repoCopy)
 	}
-	if strings.Contains(string(repoCopy), beginMarker) {
-		t.Fatalf("got repo AGENTS.md %q, want no generated-block markers: it is not a refresh target", repoCopy)
+	merged, err := mergeGenerated(string(repoCopy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged != string(repoCopy) {
+		t.Fatalf("got repo AGENTS.md %q, want its managed block already current", repoCopy)
 	}
 }
 
@@ -214,11 +271,12 @@ func TestThisRepoAgentsMdPointsAtGeneratedBody(t *testing.T) {
 // watcher's classifier and hand status's renderer were outside that change's scope: the working: prefix
 // plus a first-person convention was the only lever available.
 func TestGeneratedRulesCoverSelfDecidedCallsInFirstPerson(t *testing.T) {
-	if !strings.Contains(generatedBody, "hand send") || !strings.Contains(generatedBody, "operator decision") {
-		t.Fatalf("got generated body %q, want the hand send invariant", generatedBody)
+	instructions := strings.Join(SupervisorInstructions(), "\n")
+	if !strings.Contains(instructions, "hand send") || !strings.Contains(instructions, "operator decision") {
+		t.Fatalf("got instructions %q, want the hand send invariant", instructions)
 	}
-	if !strings.Contains(generatedBody, "working: deciding myself:") {
-		t.Fatalf("got generated body %q, want the first-person working: convention", generatedBody)
+	if !strings.Contains(instructions, "working: deciding myself:") {
+		t.Fatalf("got instructions %q, want the first-person working: convention", instructions)
 	}
 }
 
@@ -226,8 +284,9 @@ func TestGeneratedRulesCoverSelfDecidedCallsInFirstPerson(t *testing.T) {
 // to reach for hand hold, since every "waiting on" case routed through
 // data/backlog.md and hand send.
 func TestGeneratedRulesCoverHolds(t *testing.T) {
-	if !strings.Contains(generatedBody, "hand hold set") || !strings.Contains(generatedBody, "hand hold clear") {
-		t.Fatalf("got generated body %q, want hand hold set and hand hold clear", generatedBody)
+	instructions := strings.Join(SupervisorInstructions(), "\n")
+	if !strings.Contains(instructions, "hand hold set") || !strings.Contains(instructions, "hand hold clear") {
+		t.Fatalf("got instructions %q, want hand hold set and hand hold clear", instructions)
 	}
 }
 
@@ -235,6 +294,7 @@ func TestGeneratedRulesCoverHolds(t *testing.T) {
 // who reads each one and when. atqamz/secondhand#64: the one direction data/ does not carry
 // has to be stated, or the agent invents a hand-written operator channel again.
 func TestGeneratedRulesCoverOperatorContextLearningsAndArchives(t *testing.T) {
+	instructions := strings.Join(SupervisorInstructions(), "\n")
 	for _, want := range []string{
 		"data/operator.md",
 		"data/learnings.md",
@@ -243,12 +303,12 @@ func TestGeneratedRulesCoverOperatorContextLearningsAndArchives(t *testing.T) {
 		"written for the operator to read",
 		"never rewrite it",
 	} {
-		if !strings.Contains(generatedBody, want) {
-			t.Fatalf("got generated body %q, want it to name %q", generatedBody, want)
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("got instructions %q, want it to name %q", instructions, want)
 		}
 	}
-	if strings.Contains(generatedBody, "data/inbox.md") {
-		t.Fatalf("got generated body %q, want no hand-written operator channel", generatedBody)
+	if strings.Contains(instructions, "data/inbox.md") {
+		t.Fatalf("got instructions %q, want no hand-written operator channel", instructions)
 	}
 }
 
@@ -286,7 +346,7 @@ func hasViolation(violations []Violation, substr string) bool {
 	return false
 }
 
-func TestCheckSkipsNonFleetHomeAndMissingFile(t *testing.T) {
+func TestCheckSkipsNonFleetHome(t *testing.T) {
 	violations, err := Check(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -294,14 +354,19 @@ func TestCheckSkipsNonFleetHomeAndMissingFile(t *testing.T) {
 	if violations != nil {
 		t.Fatalf("got %v, want nil outside a fleet home", violations)
 	}
+}
 
+func TestCheckFlagsMissingAgentsFile(t *testing.T) {
 	dir := makeWorkspace(t)
-	violations, err = Check(dir)
+	violations, err := Check(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if violations != nil {
-		t.Fatalf("got %v, want nil when AGENTS.md does not exist yet", violations)
+	if len(violations) != 1 || !hasViolation(violations, "AGENTS.md is missing") {
+		t.Fatalf("got %v, want one missing-file violation", violations)
+	}
+	if violations[0].Severity != SeverityViolation {
+		t.Fatalf("got severity %v, want SeverityViolation", violations[0].Severity)
 	}
 }
 
@@ -415,6 +480,43 @@ func countViolations(violations []Violation, substr string) int {
 	return n
 }
 
+func TestCheckFlagsDuplicateReversedAndUnpairedMarkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		line    int
+		finding string
+	}{
+		{"unpaired start", "preamble\n" + beginMarker + "\nbody\n", 2, "unpaired hand:generated start marker"},
+		{"unpaired end", "preamble\n" + endMarker + "\n", 2, "unpaired hand:generated end marker"},
+		{"reversed", "preamble\n" + endMarker + "\n" + beginMarker + "\n", 2, "end marker appears before start marker"},
+		{"duplicate start", beginMarker + "\n" + beginMarker + "\n" + endMarker + "\n", 2, "duplicate hand:generated start marker"},
+		{"duplicate end", beginMarker + "\n" + endMarker + "\n" + endMarker + "\n", 3, "duplicate hand:generated end marker"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := makeWorkspace(t)
+			if err := os.WriteFile(filepath.Join(dir, filename), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			violations, err := Check(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, violation := range violations {
+				if strings.Contains(violation.Text, tt.finding) {
+					if violation.Line != tt.line {
+						t.Fatalf("got line %d for %q, want %d", violation.Line, violation.Text, tt.line)
+					}
+					return
+				}
+			}
+			t.Fatalf("got %v, want finding %q", violations, tt.finding)
+		})
+	}
+}
+
 func TestCheckFlagsGeneratedBlockDrift(t *testing.T) {
 	dir := makeWorkspace(t)
 	if _, err := Refresh(dir); err != nil {
@@ -425,7 +527,7 @@ func TestCheckFlagsGeneratedBlockDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drifted := strings.Replace(string(content), "## Rules", "## Rules (edited by hand)", 1)
+	drifted := strings.Replace(string(content), "hand session start", "hand session begin", 1)
 	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +541,7 @@ func TestCheckFlagsGeneratedBlockDrift(t *testing.T) {
 	}
 	// A bare "run hand init" would target the operator's working directory,
 	// which is a new nested fleet home whenever that is not the home itself.
-	if !hasViolation(violations, "run hand init "+dir+" to refresh") {
+	if !hasViolation(violations, "run hand init '"+dir+"' to refresh") {
 		t.Fatalf("got %v, want the remedy to name the resolved home %q", violations, dir)
 	}
 }
@@ -455,16 +557,82 @@ func TestCheckFlagsMissingGeneratedMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasViolation(violations, "no hand:generated markers") {
-		t.Fatalf("got %v, want a missing-markers finding: Refresh declines to touch this file, so nothing else reports it", violations)
+		t.Fatalf("got %v, want a missing-markers violation before Refresh establishes managed-block ownership", violations)
 	}
 	if hasViolation(violations, "generated block has drifted") {
 		t.Fatalf("got %v, want no drift violation when there is no block to drift", violations)
 	}
 	for _, v := range violations {
-		if strings.Contains(v.Text, "no hand:generated markers") && v.Severity != SeverityInfo {
-			t.Fatalf("got severity %v for the missing-markers finding, want SeverityInfo: Check cannot tell an accidental marker-less file from a deliberate one", v.Severity)
+		if strings.Contains(v.Text, "no hand:generated markers") && v.Severity != SeverityViolation {
+			t.Fatalf("got severity %v for the missing-markers finding, want SeverityViolation", v.Severity)
 		}
 	}
+}
+
+func TestCheckRemediationCommandsQuoteFleetHomeForPOSIXShell(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "fleet path's `printf injected`;printf injected")
+	for _, subdir := range []string{"data", "state"} {
+		if err := os.MkdirAll(filepath.Join(dir, subdir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state", "hand.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "hand"), []byte("#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assertRecovery := func(finding string) {
+		t.Helper()
+		violations, err := Check(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, violation := range violations {
+			if !strings.Contains(violation.Text, finding) {
+				continue
+			}
+			start := strings.Index(violation.Text, "run ")
+			end := strings.LastIndex(violation.Text, " to ")
+			if start < 0 || end <= start {
+				t.Fatalf("finding = %q, want an executable recovery command", violation.Text)
+			}
+			recovery := violation.Text[start+len("run ") : end]
+			got, runErr := exec.Command("sh", "-c", recovery).CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("run recovery %q: %v: %s", recovery, runErr, got)
+			}
+			want := "2\ninit\n" + dir + "\n"
+			if string(got) != want {
+				t.Fatalf("recovery argv = %q, want %q", got, want)
+			}
+			return
+		}
+		t.Fatalf("violations = %v, want finding %q", violations, finding)
+	}
+
+	assertRecovery("AGENTS.md is missing")
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte("# Hand-written, no markers\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertRecovery("no hand:generated markers")
+	if _, err := Refresh(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, filename)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := strings.Replace(string(content), "hand session start", "hand session begin", 1)
+	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertRecovery("generated block has drifted")
 }
 
 func TestCheckFlagsUnterminatedFence(t *testing.T) {

@@ -27,8 +27,10 @@ const (
 var workerSettingKeys = []string{settingHarness, settingModel, settingEffort}
 
 const (
-	stateConfigured = "configured"
-	stateMissing    = "missing"
+	stateConfigured    = "configured"
+	stateDetected      = "detected"
+	stateNativeDefault = "native-default"
+	stateMissing       = "missing"
 	// The selected harness takes no such launch flag, so there is nothing to configure - distinct from
 	// missing, which is a question still owed an answer.
 	stateUnsupported = "unsupported"
@@ -58,21 +60,25 @@ var harnessFields = []axi.Column[string]{
 }
 
 type workerConfig struct {
-	harness  string
-	settings []workerSetting
+	detection harness.Detection
+	harness   string
+	settings  []workerSetting
 }
 
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Report the fleet's worker defaults and which of them are still missing",
+		Short: "Report effective worker defaults and optional overrides",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fleetHome, err := home.Resolve()
 			if err != nil {
 				return asPrecondition(err)
 			}
-			cfg := readWorkerConfig(fleetHome)
+			cfg, err := currentWorkerConfig(fleetHome)
+			if err != nil {
+				return err
+			}
 
 			var doc axi.Doc
 			doc.Field("home", fleetHome)
@@ -98,11 +104,15 @@ func newConfigSetCmd() *cobra.Command {
 			if err != nil {
 				return asPrecondition(err)
 			}
-			rel, err := writeWorkerSetting(fleetHome, key, value)
+			cfg, err := currentWorkerConfig(fleetHome)
 			if err != nil {
 				return err
 			}
-			cfg := readWorkerConfig(fleetHome)
+			rel, err := writeWorkerSetting(fleetHome, key, value, cfg.harness)
+			if err != nil {
+				return err
+			}
+			cfg = readWorkerConfig(fleetHome, cfg.detection)
 
 			var doc axi.Doc
 			doc.Field("result", "set")
@@ -125,38 +135,52 @@ func newConfigSetCmd() *cobra.Command {
 // The report the session hook and `hand config` both render, so a supervisor rechecking after an answer
 // reads the same shape it read at session start.
 func appendWorkerConfig(doc *axi.Doc, cfg workerConfig) {
+	doc.Int("config_missing", configMissing(cfg))
+	axi.Table(doc, "config", cfg.settings, workerSettingFields)
+}
+
+func configMissing(cfg workerConfig) int {
 	missing := 0
 	for _, s := range cfg.settings {
 		if s.state == stateMissing {
 			missing++
 		}
 	}
-	doc.Int("config_missing", missing)
-	axi.Table(doc, "config", cfg.settings, workerSettingFields)
+	return missing
 }
 
-// One line per missing setting, in ask order. Each names the operator as the one who answers: a
-// supervisor that resolves the question itself has configured the fleet with its own guess.
+// An unknown supervisor is the only decision that blocks effective defaults; model and effort can
+// stay with the harness's native selection until an operator chooses an override.
 func workerConfigHelp(cfg workerConfig) []string {
-	var help []string
-	for _, s := range cfg.settings {
-		if s.state != stateMissing {
-			continue
-		}
-		if s.key == settingHarness {
-			help = append(help, "Ask the operator which harness this fleet's workers should default to, then run `hand config set harness <name>`; `hand config` lists the supported ones and which are installed")
-			continue
-		}
-		help = append(help, fmt.Sprintf("Ask the operator for the default %s for %s workers, then run `hand config set %s <value>`", s.key, cfg.harness, s.key))
+	if cfg.harness != "" {
+		return nil
 	}
-	return help
+	return []string{"Ask the operator which harness this fleet's workers should default to, then run `hand config set harness <name>`; `hand config` lists the supported ones and which are installed"}
 }
 
-// Model and effort are read from the file keyed to the configured harness, never from a bare
-// config/model: a value chosen for one harness is not a default for the next one.
-func readWorkerConfig(fleetHome string) workerConfig {
-	cfg := workerConfig{harness: configDefault(fleetHome, settingHarness, "")}
-	cfg.settings = []workerSetting{{key: settingHarness, state: valueState(cfg.harness), value: cfg.harness}}
+func currentWorkerConfig(fleetHome string) (workerConfig, error) {
+	detected, err := harness.DetectCurrent()
+	if err != nil {
+		return workerConfig{}, err
+	}
+	return readWorkerConfig(fleetHome, detected), nil
+}
+
+// Effective model and effort overrides are read from files keyed to the selected harness, never from a
+// bare config/model: a value chosen for one harness is not a default for the next one.
+func readWorkerConfig(fleetHome string, detected harness.Detection) workerConfig {
+	cfg := workerConfig{detection: detected}
+	configured := configDefault(fleetHome, settingHarness, "")
+	harnessState := stateMissing
+	switch {
+	case configured != "":
+		cfg.harness = configured
+		harnessState = stateConfigured
+	case harness.IsSupported(detected.Name):
+		cfg.harness = detected.Name
+		harnessState = stateDetected
+	}
+	cfg.settings = []workerSetting{{key: settingHarness, state: harnessState, value: cfg.harness}}
 	for _, key := range []string{settingModel, settingEffort} {
 		s := workerSetting{key: key}
 		switch {
@@ -166,7 +190,10 @@ func readWorkerConfig(fleetHome string) workerConfig {
 			s.state = stateUnsupported
 		default:
 			s.value = configDefault(fleetHome, harnessSettingKey(key, cfg.harness), "")
-			s.state = valueState(s.value)
+			s.state = stateConfigured
+			if s.value == "" {
+				s.state = stateNativeDefault
+			}
 		}
 		cfg.settings = append(cfg.settings, s)
 	}
@@ -188,13 +215,6 @@ func harnessCarries(key, harnessName string) bool {
 	return harness.SupportsModel(harnessName)
 }
 
-func valueState(value string) string {
-	if value == "" {
-		return stateMissing
-	}
-	return stateConfigured
-}
-
 func onPath(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
@@ -203,7 +223,7 @@ func onPath(name string) bool {
 // Harness names are validated against internal/harness, and effort and model are not: hand knows which
 // launch flags a harness takes, and a model identifier belongs to the harness's own catalog, which a
 // release of hand cannot keep up with.
-func writeWorkerSetting(fleetHome, key, value string) (string, error) {
+func writeWorkerSetting(fleetHome, key, value, currentHarness string) (string, error) {
 	if !slices.Contains(workerSettingKeys, key) {
 		return "", &ExitError{Err: fmt.Errorf("unknown setting %q: want one of %s", key, strings.Join(workerSettingKeys, ", ")), Code: 2}
 	}
@@ -217,14 +237,13 @@ func writeWorkerSetting(fleetHome, key, value string) (string, error) {
 			return "", &ExitError{Err: fmt.Errorf("harness %q not recognized: want one of %s", value, strings.Join(harness.Names(), ", ")), Code: 2}
 		}
 	} else {
-		current := configDefault(fleetHome, settingHarness, "")
-		if current == "" {
-			return "", &ExitError{Err: fmt.Errorf("no worker harness configured, so %s does not apply to anything yet; set the harness first: hand config set harness <name>", key), Code: 3}
+		if currentHarness == "" {
+			return "", &ExitError{Err: fmt.Errorf("current supervisor harness is unknown and no worker harness override is configured; run hand config set harness <name> before setting %s", key), Code: 3}
 		}
-		if !harnessCarries(key, current) {
-			return "", &ExitError{Err: fmt.Errorf("harness %q takes no %s, so there is nothing to configure", current, key), Code: 2}
+		if !harnessCarries(key, currentHarness) {
+			return "", &ExitError{Err: fmt.Errorf("harness %q takes no %s, so there is nothing to configure", currentHarness, key), Code: 2}
 		}
-		name = harnessSettingKey(key, current)
+		name = harnessSettingKey(key, currentHarness)
 	}
 
 	dir := filepath.Join(fleetHome, "config")
@@ -241,7 +260,10 @@ func writeWorkerSetting(fleetHome, key, value string) (string, error) {
 // moved. Left unkeyed, that value would become the default for whatever harness the home switches to
 // next, which is how a claude model identifier reaches an opencode worker.
 func migrateWorkerSettings(fleetHome string) ([]string, error) {
-	harnessName := configDefault(fleetHome, settingHarness, harness.Claude)
+	harnessName := configDefault(fleetHome, settingHarness, "")
+	if harnessName == "" {
+		return nil, nil
+	}
 	var moved []string
 	var errs []error
 	for _, key := range []string{settingModel, settingEffort} {

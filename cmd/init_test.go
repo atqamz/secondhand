@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atqamz/secondhand/internal/harness"
 	"github.com/atqamz/secondhand/internal/home"
 )
 
@@ -139,10 +140,11 @@ func TestInitIsIdempotentAboutTheHandDbMarker(t *testing.T) {
 	}
 }
 
-// Bootstrap answers nothing on the operator's behalf, so a fresh home leaves every worker default
-// unwritten and hands the questions to the session that reads this document.
-func TestInitWritesNoWorkerDefaultAndReportsWhatIsMissing(t *testing.T) {
+// Bootstrap persists nothing on the operator's behalf while still reporting the detected harness
+// and the harness-native tier defaults a worker will actually inherit.
+func TestInitWritesNoWorkerOverrideAndReportsEffectiveDefaults(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
+	t.Setenv("HAND_HARNESS", harness.Codex)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
@@ -162,14 +164,69 @@ func TestInitWritesNoWorkerDefaultAndReportsWhatIsMissing(t *testing.T) {
 		t.Fatalf("init wrote config/%s, want no worker default chosen for the operator", e.Name())
 	}
 	for _, want := range []string{
-		"config_missing: 1\n",
-		"harness,missing,none",
-		"model,pending-harness,none",
-		"hand config set <key> <value>",
+		"config_missing: 0\n",
+		"harness,detected,codex",
+		"model,native-default,none",
+		"effort,native-default,none",
+		"detects the current harness",
+		"native model and effort defaults",
+		"only to persist an explicit worker override",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("init output = %q, want it to contain %q", out.String(), want)
 		}
+	}
+}
+
+func TestInitHelpDescribesConfiguredAndUnknownEffectiveSettings(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		detected   string
+		configured string
+		want       string
+		unwant     string
+	}{
+		{
+			name:       "configured",
+			detected:   harness.Codex,
+			configured: harness.Claude,
+			want:       "uses the configured worker harness and any explicit model or effort overrides",
+			unwant:     "detects the current harness",
+		},
+		{
+			name:     "unknown",
+			detected: "unknown",
+			want:     "no supported worker harness is configured or detected",
+			unwant:   "uses its native model and effort defaults",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAND_HOME", "")
+			t.Setenv("HAND_HARNESS", test.detected)
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if test.configured != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config", "harness"), []byte(test.configured+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := newInitCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), test.want) {
+				t.Fatalf("init output = %q, want %q", out.String(), test.want)
+			}
+			if strings.Contains(out.String(), test.unwant) {
+				t.Fatalf("init output = %q, do not want %q for %s settings", out.String(), test.unwant, test.name)
+			}
+		})
 	}
 }
 
@@ -229,12 +286,13 @@ func TestInitNeverReadsStdin(t *testing.T) {
 	}
 }
 
-func TestInitInstallsTheSessionHookAndSaysSoOnlyWhenItWroteIt(t *testing.T) {
+func TestInitRemovesTheSessionHookAndSaysSoOnlyWhenItChangedSettings(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeOwnedSessionHook(t, dir)
 
-	for i, want := range []string{"session_hook: written\n", "session_hook: unchanged\n"} {
+	for i, want := range []string{"session_hook: removed\n", "session_hook: unchanged\n"} {
 		cmd := newInitCmd()
 		var out bytes.Buffer
 		cmd.SetOut(&out)
@@ -245,13 +303,16 @@ func TestInitInstallsTheSessionHookAndSaysSoOnlyWhenItWroteIt(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("run %d output = %q, want it to contain %q", i+1, out.String(), want)
 		}
+		if !strings.Contains(out.String(), "AGENTS.md and its CLAUDE.md symlink carry the startup integration across harnesses") {
+			t.Fatalf("run %d output = %q, want cross-harness startup help", i+1, out.String())
+		}
 	}
 
 	settings, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(settings), "SessionStart") {
-		t.Fatalf("settings = %q, want a SessionStart hook in it", settings)
+	if strings.Contains(string(settings), "/old/path/hand") || !strings.Contains(string(settings), "/usr/bin/custom") {
+		t.Fatalf("settings = %q, want only the unrelated hook preserved", settings)
 	}
 }

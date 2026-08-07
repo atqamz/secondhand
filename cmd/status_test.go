@@ -1326,6 +1326,24 @@ func TestStatusFleetEmptyIsAPositiveStatement(t *testing.T) {
 	}
 }
 
+func TestAppendFleetStateKeepsTheStatusBlocksExact(t *testing.T) {
+	views := []taskView{{task: state.Task{ID: "task-1"}, agentState: "working", unacked: true}}
+	cols := []axi.Column[taskView]{{Name: "id", Value: func(v taskView) string { return v.task.ID }}}
+	var doc axi.Doc
+	if attention := appendFleetState(&doc, views, nil, cols); attention != 1 {
+		t.Fatalf("attention = %d, want 1", attention)
+	}
+	want := "count: 1\n" +
+		"attention: 1\n" +
+		"held: 0\n" +
+		"tasks[1]{id}:\n" +
+		"  task-1\n" +
+		"holds[0]{id,kind,detail,age}:\n"
+	if got := doc.String(); got != want {
+		t.Fatalf("fleet state = %q, want the status blocks unchanged %q", got, want)
+	}
+}
+
 // --fields narrows what is emitted, and the schema header has to narrow with
 // it: a header promising columns the rows do not carry is worse than no header.
 func TestStatusFleetFieldsNarrowsTheSchemaHeaderWithTheRows(t *testing.T) {
