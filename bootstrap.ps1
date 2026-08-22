@@ -48,7 +48,12 @@ if ($HAND_RELEASE_SHA256_WINDOWS_AMD64 -notmatch '^[0-9a-fA-F]{64}$') {
 $handInstallDir = if ($env:HAND_INSTALL_DIR) {
     $env:HAND_INSTALL_DIR
 } else {
-    Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'hand'
+    $localAppData = if ($env:LOCALAPPDATA) {
+        $env:LOCALAPPDATA
+    } else {
+        [Environment]::GetFolderPath('LocalApplicationData')
+    }
+    Join-Path $localAppData 'hand'
 }
 if (-not [IO.Path]::IsPathRooted($handInstallDir)) {
     Fail 'HAND_INSTALL_DIR must be an absolute path'
