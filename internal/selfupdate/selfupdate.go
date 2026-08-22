@@ -103,6 +103,44 @@ func IsNewer(latest, current string) (bool, error) {
 	return lPatch > cPatch, nil
 }
 
+type VersionRelation string
+
+const (
+	VersionOlder VersionRelation = "older"
+	VersionSame  VersionRelation = "same"
+	VersionNewer VersionRelation = "newer"
+)
+
+func CompareVersions(current, target string) (VersionRelation, error) {
+	currentMajor, currentMinor, currentPatch, err := parseSemver(current)
+	if err != nil {
+		return "", fmt.Errorf("parse current version %q: %w", current, err)
+	}
+	targetMajor, targetMinor, targetPatch, err := parseSemver(target)
+	if err != nil {
+		return "", fmt.Errorf("parse target version %q: %w", target, err)
+	}
+	if currentMajor != targetMajor {
+		if currentMajor < targetMajor {
+			return VersionOlder, nil
+		}
+		return VersionNewer, nil
+	}
+	if currentMinor != targetMinor {
+		if currentMinor < targetMinor {
+			return VersionOlder, nil
+		}
+		return VersionNewer, nil
+	}
+	if currentPatch != targetPatch {
+		if currentPatch < targetPatch {
+			return VersionOlder, nil
+		}
+		return VersionNewer, nil
+	}
+	return VersionSame, nil
+}
+
 func parseSemver(s string) (major, minor, patch int, err error) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 	parts := strings.Split(s, ".")
@@ -124,9 +162,9 @@ func parseSemver(s string) (major, minor, patch int, err error) {
 // the real test binary produced by `go test`.
 var ExecutableOverride = os.Executable
 
-// Downloads the release tagged tag from repo, verifies its checksum, and replaces the running
-// binary with a complete staged file in the executable's directory.
-func Apply(repo, tag string) error {
+// Apply downloads the exact target release, verifies its checksum and build identity, and replaces
+// the running binary with a complete staged file in the executable's directory.
+func Apply(repo string, target Target) error {
 	execPath, err := ExecutableOverride()
 	if err != nil {
 		return fmt.Errorf("locate running binary: %w", err)
@@ -144,7 +182,7 @@ func Apply(repo, tag string) error {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	if err := downloadAssets(context.Background(), repo, tag, tmpDir, assetName, "checksums.txt"); err != nil {
+	if err := downloadAssets(context.Background(), repo, target.Tag, tmpDir, assetName, "checksums.txt"); err != nil {
 		return fmt.Errorf("download release assets: %w", err)
 	}
 	if err := verifyChecksum(tmpDir, assetName); err != nil {
@@ -164,9 +202,23 @@ func Apply(repo, tag string) error {
 	if err := extractBinary(filepath.Join(tmpDir, assetName), archiveBinaryName(runtime.GOOS), tmpBinary); err != nil {
 		return err
 	}
+	want := BuildInfo{Version: target.Version, Channel: target.Channel, Commit: target.Commit, Distribution: DistributionGitHub}
+	if err := verifyExecutableBuildInfo(context.Background(), tmpBinary, want); err != nil {
+		return fmt.Errorf("verify staged build identity: %w", err)
+	}
 
-	if err := replaceExecutable(execPath, tmpBinary); err != nil {
+	replacement, err := replaceAdoptedExecutable(execPath, tmpBinary)
+	if err != nil {
 		return fmt.Errorf("replace running binary: %w", err)
+	}
+	if err := verifyExecutableBuildInfo(context.Background(), execPath, want); err != nil {
+		if rollbackErr := replacement.rollback(); rollbackErr != nil {
+			return fmt.Errorf("verify selected build identity: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("verify selected build identity: %w", err)
+	}
+	if err := replacement.commit(); err != nil {
+		return fmt.Errorf("clean up previous Hand after selecting %s: %w", execPath, err)
 	}
 	return nil
 }

@@ -71,7 +71,7 @@ func newUpdateCmd(info selfupdate.BuildInfo) *cobra.Command {
 				return doc.Render(cmd.OutOrStdout())
 			}
 
-			if err := selfupdate.Apply(selfupdate.Repo, target.Tag); err != nil {
+			if err := selfupdate.Apply(selfupdate.Repo, target); err != nil {
 				return err
 			}
 

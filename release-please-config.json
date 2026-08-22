@@ -7,5 +7,7 @@
       "extra-files": ["flake.nix"]
     }
   },
+  "draft": true,
+  "force-tag-creation": true,
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
 }

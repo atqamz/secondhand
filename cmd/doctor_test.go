@@ -818,6 +818,30 @@ func TestDoctorReportsNotReadyWithBlockingAndNextWhenTreehouseAndEveryHarnessAre
 	}
 }
 
+func TestDoctorStrictModeReturnsAnErrorForBlockingReadiness(t *testing.T) {
+	home := t.TempDir()
+	t.Chdir(home)
+	mkFleetDirs(t, home)
+	if _, err := agentsmd.Refresh(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skill.Refresh(home); err != nil {
+		t.Fatal(err)
+	}
+	faketool.NoTools(t)
+
+	var out bytes.Buffer
+	cmd := newDoctorCmd(stableBuild("v0.1.0"))
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--fail-if-not-ready"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("strict doctor error = %v, want a not-ready error", err)
+	}
+	if !strings.Contains(out.String(), "ready: false\n") {
+		t.Fatalf("strict doctor output = %q, want structured readiness", out.String())
+	}
+}
+
 func TestDoctorGHNotRequiredForALocalOnlyProjectDoesNotBlockReadiness(t *testing.T) {
 	home := t.TempDir()
 	t.Chdir(home)

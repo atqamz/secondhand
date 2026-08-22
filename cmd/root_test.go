@@ -23,6 +23,10 @@ func stableBuild(version string) selfupdate.BuildInfo {
 	return selfupdate.BuildInfo{Version: version, Channel: selfupdate.ChannelStable}
 }
 
+func directStableBuild(version string) selfupdate.BuildInfo {
+	return selfupdate.BuildInfo{Version: version, Channel: selfupdate.ChannelStable, Distribution: selfupdate.DistributionGitHub}
+}
+
 func exitCodeFor(t *testing.T, err error) int {
 	t.Helper()
 	if err == nil {
@@ -118,6 +122,19 @@ func TestRootRejectsUnknownFlag(t *testing.T) {
 	_, err := root.ExecuteC()
 	if code := exitCodeFor(t, err); code != 2 {
 		t.Fatalf("code = %d, want 2 (err = %v)", code, err)
+	}
+}
+
+func TestDoctorDoesNotWriteVersionNoticeCache(t *testing.T) {
+	home := setupSessionHome(t)
+	t.Setenv("HAND_HOME", home)
+	root := newRootCmd(stableBuild("1.0.0"))
+	root.SetArgs([]string{"doctor"})
+	root.SetOut(new(strings.Builder))
+	root.SetErr(new(strings.Builder))
+	_, _ = root.ExecuteC()
+	if _, err := os.Stat(filepath.Join(home, "state", ".version-check")); !os.IsNotExist(err) {
+		t.Fatalf("doctor created a version notice cache in read-only flow: %v", err)
 	}
 }
 

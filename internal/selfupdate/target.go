@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -70,7 +71,11 @@ func resolveTarget(ctx context.Context, repo, channel string) (Target, error) {
 		if err != nil {
 			return Target{}, err
 		}
-		return Target{Channel: ChannelStable, Tag: tag, Version: tag}, nil
+		commit, err := stableCommit(ctx, repo, tag)
+		if err != nil {
+			return Target{}, err
+		}
+		return Target{Channel: ChannelStable, Tag: tag, Version: tag, Commit: commit}, nil
 	case ChannelEdge:
 		commit, err := edgeCommit(ctx, repo)
 		if err != nil {
@@ -87,6 +92,29 @@ func resolveTarget(ctx context.Context, repo, channel string) (Target, error) {
 		}, nil
 	}
 	return Target{}, fmt.Errorf("invalid release channel %q", channel)
+}
+
+func stableCommit(ctx context.Context, repo, tag string) (string, error) {
+	if selfUpdateTestFallback {
+		out, err := runTestGH(ctx, "api", "repos/"+repo+"/commits/"+tag, "--jq", ".sha")
+		if err != nil {
+			return "", fmt.Errorf("query stable release commit: %w", err)
+		}
+		if !validCommit(out) {
+			return "", fmt.Errorf("invalid stable release commit %q", out)
+		}
+		return out, nil
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := githubAPI(ctx, repo, "/commits/"+url.PathEscape(tag), &commit); err != nil {
+		return "", fmt.Errorf("query stable release commit: %w", err)
+	}
+	if !validCommit(commit.SHA) {
+		return "", fmt.Errorf("invalid stable release commit %q", commit.SHA)
+	}
+	return commit.SHA, nil
 }
 
 func NeedsUpdate(current BuildInfo, target Target) (bool, error) {

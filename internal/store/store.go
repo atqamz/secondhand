@@ -515,6 +515,26 @@ func OpenReadOnly(homeDir string) (*DB, error) {
 	return db, nil
 }
 
+// ValidateInitTarget checks that an existing state database can be opened by the
+// migration path without running that migration.
+func ValidateInitTarget(homeDir string) error {
+	if _, err := os.Stat(Path(homeDir)); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("check %s: %w", Path(homeDir), err)
+	}
+	db, err := openReadOnly(homeDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	current, err := db.schemaVersion()
+	if err != nil {
+		return err
+	}
+	return schemaVersionError(current, len(migrations))
+}
+
 func openReadOnlyForLifecycle(homeDir string) (*DB, int, error) {
 	if _, err := os.Stat(Path(homeDir)); os.IsNotExist(err) {
 		db, err := OpenReadOnly(homeDir)

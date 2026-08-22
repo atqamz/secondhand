@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,144 @@ import (
 	"github.com/atqamz/hand/internal/registry"
 	"github.com/atqamz/hand/internal/store"
 )
+
+func snapshotInitTarget(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snapshot := map[string]string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		key := fmt.Sprintf("%s|%o", rel, info.Mode())
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			key += "|" + string(data)
+		}
+		snapshot[rel] = key
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func seedLegacyInitTarget(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data", "projects.md"), []byte("# Projects\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitRefusesForeignNonEmptyTargetWithoutMutation(t *testing.T) {
+	t.Setenv("HAND_HOME", "")
+	parent := t.TempDir()
+	target := filepath.Join(parent, "foreign fleet")
+	if err := os.MkdirAll(filepath.Join(target, "nested empty"), 0o751); err != nil {
+		t.Fatal(err)
+	}
+	foreign := filepath.Join(target, "nested empty", "notes.txt")
+	if err := os.WriteFile(foreign, []byte("do not adopt\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotInitTarget(t, target)
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{target})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("init error = %v, want foreign non-empty refusal", err)
+	}
+	if after := snapshotInitTarget(t, target); !reflect.DeepEqual(after, before) {
+		t.Fatalf("foreign target changed: before=%v after=%v", before, after)
+	}
+}
+
+func TestInitRefusesAnUnsafeRecognizedTargetWithoutMutation(t *testing.T) {
+	t.Setenv("HAND_HOME", "")
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(target, "state", "hand.db")
+	if err := os.WriteFile(dbPath, []byte("not sqlite"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotInitTarget(t, target)
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{target})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unsafe to reconcile") {
+		t.Fatalf("init error = %v, want unsafe-state refusal", err)
+	}
+	if after := snapshotInitTarget(t, target); !reflect.DeepEqual(after, before) {
+		t.Fatalf("unsafe target changed: before=%v after=%v", before, after)
+	}
+}
+
+func TestInitAllowsHandOwnedRuntimeAlongsideTheTarget(t *testing.T) {
+	t.Setenv("HAND_HOME", "")
+	target := t.TempDir()
+	runtimeRoot := filepath.Join(target, ".secondhand")
+	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SECONDHAND_HOME", runtimeRoot)
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{target})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with Hand-owned runtime: %v", err)
+	}
+}
+
+func TestInitRefusesForeignContentAlongsideHandOwnedRuntime(t *testing.T) {
+	t.Setenv("HAND_HOME", "")
+	target := t.TempDir()
+	runtimeRoot := filepath.Join(target, ".secondhand")
+	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "notes.txt"), []byte("foreign\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SECONDHAND_HOME", runtimeRoot)
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{target})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("init error = %v, want foreign content refusal", err)
+	}
+}
+
+func TestInitAllowsExistingAgentsFileForHandMigration(t *testing.T) {
+	t.Setenv("HAND_HOME", "")
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "AGENTS.md"), []byte("legacy instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{target})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with legacy AGENTS.md: %v", err)
+	}
+}
 
 func TestInitCreatesTheHandDbMarker(t *testing.T) {
 	t.Setenv("HAND_HOME", "")
@@ -117,9 +257,7 @@ func TestInitLeavesExistingDataFilesAlone(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	seedLegacyInitTarget(t, dir)
 	existing := "# Operator\n\n## Authority\n\nMerge without asking.\n"
 	if err := os.WriteFile(filepath.Join(dir, "data", "operator.md"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
@@ -251,6 +389,7 @@ func TestInitHelpDescribesConfiguredAndUnknownEffectiveSettings(t *testing.T) {
 			dir := t.TempDir()
 			t.Chdir(dir)
 			if test.configured != "" {
+				seedLegacyInitTarget(t, dir)
 				if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -335,6 +474,7 @@ func TestInitRemovesTheSessionHookAndSaysSoOnlyWhenItChangedSettings(t *testing.
 	t.Setenv("HAND_HOME", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	seedLegacyInitTarget(t, dir)
 	writeOwnedSessionHook(t, dir)
 
 	for i, want := range []string{"session_hook: removed\n", "session_hook: unchanged\n"} {
@@ -394,6 +534,7 @@ func TestInitReportsASkillDestinationConflictWithoutOverwritingTheForeignFile(t 
 	t.Setenv("HAND_HOME", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	seedLegacyInitTarget(t, dir)
 	claudeSkillDir := filepath.Join(dir, ".claude", "skills", "secondhand")
 	if err := os.MkdirAll(claudeSkillDir, 0o755); err != nil {
 		t.Fatal(err)

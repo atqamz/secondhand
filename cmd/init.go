@@ -11,6 +11,7 @@ import (
 
 	"github.com/atqamz/hand/internal/agentsmd"
 	"github.com/atqamz/hand/internal/axi"
+	"github.com/atqamz/hand/internal/home"
 	"github.com/atqamz/hand/internal/integration"
 	"github.com/atqamz/hand/internal/project"
 	"github.com/atqamz/hand/internal/registry"
@@ -18,6 +19,7 @@ import (
 	"github.com/atqamz/hand/internal/sessionhook"
 	"github.com/atqamz/hand/internal/skill"
 	"github.com/atqamz/hand/internal/state"
+	"github.com/atqamz/hand/internal/toolchain"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +75,9 @@ func newInitCmd() *cobra.Command {
 			}
 			home, err := resolveInitHome(cwd, args)
 			if err != nil {
+				return err
+			}
+			if err := preflightInitTarget(home); err != nil {
 				return err
 			}
 
@@ -167,6 +172,60 @@ func newInitCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func preflightInitTarget(target string) error {
+	info, err := os.Stat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect init target %s: %w", target, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("init target %s exists and is not a directory", target)
+	}
+	known, err := home.IsHome(target)
+	if err != nil {
+		return fmt.Errorf("inspect init target %s: %w", target, err)
+	}
+	if known {
+		if err := state.ValidateInitTarget(target); err != nil {
+			return fmt.Errorf("init target %s is recognized but unsafe to reconcile: %w; refusing before mutation", target, err)
+		}
+		return nil
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return fmt.Errorf("inspect init target %s: %w", target, err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	runtimeRoot, err := handOwnedRuntimeRoot()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "AGENTS.md":
+			continue
+		case ".secondhand":
+			if runtimeRoot == filepath.Join(target, entry.Name()) {
+				continue
+			}
+		}
+		return fmt.Errorf("init target %s exists, is not empty, and is not a recognized Secondhand fleet; refusing to adopt it", target)
+	}
+	return nil
+}
+
+func handOwnedRuntimeRoot() (string, error) {
+	store, err := toolchain.DefaultStore()
+	if err != nil {
+		return "", fmt.Errorf("inspect private runtime store: %w", err)
+	}
+	return filepath.Clean(store.Root), nil
 }
 
 func registerFleet(home, fleetID string) (string, error) {

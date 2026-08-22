@@ -67,9 +67,10 @@ func TestUpdateCheckFollowsEmbeddedEdgeChannel(t *testing.T) {
 	writeFakeGHChannels(t, "v0.5.0", edgeCommandCommit)
 
 	cmd := newUpdateCmd(selfupdate.BuildInfo{
-		Version: "edge.aaaaaaaaaaaa",
-		Channel: selfupdate.ChannelEdge,
-		Commit:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Version:      "edge.aaaaaaaaaaaa",
+		Channel:      selfupdate.ChannelEdge,
+		Commit:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Distribution: selfupdate.DistributionGitHub,
 	})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -140,9 +141,10 @@ func TestUpdateInstallsEdgeAssetThroughSharedApplyPath(t *testing.T) {
 	writeFakeGHEdgeUpdate(t, edgeCommandCommit, "edge notes", fixture)
 
 	cmd := newUpdateCmd(selfupdate.BuildInfo{
-		Version: "edge.aaaaaaaaaaaa",
-		Channel: selfupdate.ChannelEdge,
-		Commit:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Version:      "edge.aaaaaaaaaaaa",
+		Channel:      selfupdate.ChannelEdge,
+		Commit:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Distribution: selfupdate.DistributionGitHub,
 	})
 	var out bytes.Buffer
 	cmd.SetOut(&out)

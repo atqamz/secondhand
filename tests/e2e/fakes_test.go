@@ -17,7 +17,7 @@ import (
 // Everything hand or bootstrap.sh execs beyond these is faked per test and left unreachable (e2e_test.go).
 // git, sh and cat back real production and fixture calls; the rest are plain POSIX utilities bootstrap.sh
 // runs, never one of the backends (herdr, treehouse, gh, no-mistakes) this suite fakes instead.
-var realBinsOnPath = []string{"git", "sh", "cat", "uname", "dirname", "awk", "sed", "head", "grep", "ls", "mkdir", "mktemp", "rm", "chmod"}
+var realBinsOnPath = []string{"git", "sh", "cat", "uname", "dirname", "basename", "awk", "sed", "head", "grep", "tr", "ls", "mkdir", "mktemp", "rm", "chmod", "cp", "mv", "dd", "gzip", "install", "sha256sum", "tar"}
 
 // The PATH every test runs under, built once by TestMain from the inherited PATH.
 var hermeticPath string

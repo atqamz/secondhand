@@ -57,6 +57,7 @@ type GHRepo struct {
 // edge prerelease and the commit its ref points at.
 type GHRelease struct {
 	Tag        string
+	Commit     string
 	Notes      string
 	FixtureDir string
 	Repo       string
@@ -518,6 +519,15 @@ func ghPRMerge(spec ghSpec, args []string) int {
 
 // The mutable edge ref self-update reads for the freshness of an edge build.
 func ghAPI(spec ghSpec, args []string) int {
+	stableArgs := []string{"api", "repos/" + ghReleaseRepo(spec.Release) + "/commits/" + spec.Release.Tag, "--jq", ".sha"}
+	if spec.Release.Tag != "" && sameArgs(args, stableArgs) {
+		commit := spec.Release.Commit
+		if commit == "" {
+			commit = "fedcba9876543210fedcba9876543210fedcba98"
+		}
+		_, _ = io.WriteString(os.Stdout, commit)
+		return 0
+	}
 	if !sameArgs(args, []string{"api", "repos/" + ghReleaseRepo(spec.Release) + "/commits/" + edgeTag, "--jq", ".sha"}) {
 		return fail("unexpected gh invocation: %s", strings.Join(args, " "))
 	}

@@ -3,13 +3,15 @@ package selfupdate
 import "testing"
 
 func TestCanSelfUpdateAllowsOnlyHandOwnedDistributions(t *testing.T) {
-	for _, distribution := range []string{"", DistributionGitHub, DistributionInstallScript} {
+	for _, distribution := range []string{DistributionGitHub, DistributionInstallScript} {
 		if !CanSelfUpdate(distribution) {
 			t.Errorf("CanSelfUpdate(%q) = false, want true", distribution)
 		}
 	}
 
 	for _, distribution := range []string{
+		"",
+		"unknown",
 		DistributionBrew, DistributionWinget, DistributionNpm, DistributionNix,
 		DistributionDeb, DistributionRpm, DistributionAur, DistributionGo, DistributionSource,
 	} {

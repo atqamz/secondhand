@@ -77,6 +77,7 @@ var harnessReadinessFields = []axi.Column[harnessReadiness]{
 
 func newDoctorCmd(info selfupdate.BuildInfo) *cobra.Command {
 	var fields []string
+	var failIfNotReady bool
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -151,11 +152,15 @@ func newDoctorCmd(info selfupdate.BuildInfo) *cobra.Command {
 			if failing > 0 {
 				return fmt.Errorf("%s: %d issue(s) found", path, failing)
 			}
+			if failIfNotReady && len(blocking) > 0 {
+				return fmt.Errorf("fleet is not ready: %d blocking condition(s)", len(blocking))
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringSliceVar(&fields, "fields", nil, fieldsFlagUsage(doctorFields, doctorDefaultFields))
+	cmd.Flags().BoolVar(&failIfNotReady, "fail-if-not-ready", false, "return an error when readiness has blocking conditions")
 	return cmd
 }
 

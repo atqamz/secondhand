@@ -23,12 +23,16 @@ func newRootCmd(info selfupdate.BuildInfo) *cobra.Command {
 		Short:   "You lead. hand runs the crew.",
 		Version: info.Version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Name() == "build-info" || cmd.Name() == "adopt" {
+				return nil
+			}
 			if cmd.Name() == "fleet" {
 				return nil
 			}
 			if fleetHome, err := home.Resolve(); err == nil {
 				startupOverview := cmd.Name() == "hand" || cmd.CommandPath() == "hand session start"
-				if cmd.Name() != "init" && !startupOverview && cmd.Name() != "status" {
+				readOnly := isReadOnlyCommand(cmd)
+				if cmd.Name() != "init" && cmd.Name() != "status" && !startupOverview && !readOnly {
 					if _, statErr := os.Stat(store.Path(fleetHome)); os.IsNotExist(statErr) {
 						if err := project.Migrate(fleetHome); err != nil {
 							return err
@@ -40,13 +44,13 @@ func newRootCmd(info selfupdate.BuildInfo) *cobra.Command {
 						return err
 					}
 				}
-				if cmd.Name() != "update" && !startupOverview {
+				if cmd.Name() != "update" && !startupOverview && !readOnly {
 					if notice := selfupdate.CheckNoticeForBuild(fleetHome, selfupdate.Repo, info); notice != "" {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), notice)
 					}
 				}
 				if shouldGuardFleet(cmd) {
-					warnings, err := registry.Preflight(fleetHome, cmd.Name() == "status" || startupOverview)
+					warnings, err := registry.Preflight(fleetHome, cmd.Name() == "status" || readOnly || startupOverview)
 					if err != nil {
 						return asPrecondition(err)
 					}
@@ -72,6 +76,8 @@ func newRootCmd(info selfupdate.BuildInfo) *cobra.Command {
 		return &ExitError{Err: err, Code: 2}
 	})
 	root.AddCommand(newInitCmd())
+	root.AddCommand(newBuildInfoCmd(info))
+	root.AddCommand(newAdoptCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newProjectCmd())
 	root.AddCommand(newSpawnCmd())
@@ -99,6 +105,15 @@ func newRootCmd(info selfupdate.BuildInfo) *cobra.Command {
 	root.InitDefaultCompletionCmd()
 	guardSubcommandGroups(root)
 	return root
+}
+
+func isReadOnlyCommand(cmd *cobra.Command) bool {
+	switch cmd.CommandPath() {
+	case "hand", "hand doctor", "hand runtime status":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldGuardFleet(cmd *cobra.Command) bool {

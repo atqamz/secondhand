@@ -14,3 +14,7 @@ func FleetID(homeDir string) (string, error) {
 func FleetIDReadOnly(homeDir string) (string, error) {
 	return store.FleetIDReadOnly(homeDir)
 }
+
+func ValidateInitTarget(homeDir string) error {
+	return store.ValidateInitTarget(homeDir)
+}

@@ -28,10 +28,7 @@ func detectDistribution() string {
 	return DistributionSource
 }
 
-// A build from before this field existed carries no distribution and self-updated
-// freely, so the empty string keeps that behavior rather than newly refusing it.
 var handOwned = map[string]bool{
-	"":                        true,
 	DistributionGitHub:        true,
 	DistributionInstallScript: true,
 }

@@ -130,6 +130,7 @@ func TestOrdinaryCommandsDoNotEvictTheWatcher(t *testing.T) {
 			// Swallow any watcher events as real fleet traffic; only nudge the fixture for send.
 			if tc.name == "send" {
 				setPaneStatus(t, statusDir, "pane-1", "idle")
+				watcher.waitForStdout(t, "idle-unreported task-1", 5*time.Second)
 			}
 
 			tc.command(t, home)

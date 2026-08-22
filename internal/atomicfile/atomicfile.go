@@ -37,7 +37,7 @@ func Write(path, tempPrefix string, data []byte, mode os.FileMode) error {
 		removeTemp()
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := replace(tmpName, path); err != nil {
 		removeTemp()
 		return fmt.Errorf("rename temp file: %w", err)
 	}

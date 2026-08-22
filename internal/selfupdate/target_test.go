@@ -9,10 +9,11 @@ import (
 )
 
 const edgeTestCommit = "0123456789abcdef0123456789abcdef01234567"
+const stableTestCommit = "fedcba9876543210fedcba9876543210fedcba98"
 
 func writeFakeGHTarget(t *testing.T, stable, edge string) {
 	t.Helper()
-	faketool.GH{Release: faketool.GHRelease{Tag: stable, EdgeCommit: edge}}.Install(t, faketool.Bin(t))
+	faketool.GH{Release: faketool.GHRelease{Tag: stable, Commit: stableTestCommit, EdgeCommit: edge}}.Install(t, faketool.Bin(t))
 }
 
 func TestNormalizeBuildInfoDefaultsUnknownChannelsToDev(t *testing.T) {
@@ -54,7 +55,7 @@ func TestResolveTargetStableUsesLatestRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Target{Channel: ChannelStable, Tag: "v0.5.0", Version: "v0.5.0"}
+	want := Target{Channel: ChannelStable, Tag: "v0.5.0", Version: "v0.5.0", Commit: stableTestCommit}
 	if target != want {
 		t.Fatalf("target = %#v, want %#v", target, want)
 	}
@@ -176,5 +177,27 @@ func TestNeedsUpdateUsesChannelSpecificIdentity(t *testing.T) {
 func TestNeedsUpdateRejectsInvalidTargetChannel(t *testing.T) {
 	if _, err := NeedsUpdate(BuildInfo{Version: "v0.1.0", Channel: ChannelStable}, Target{Channel: "nightly", Version: "nightly"}); err == nil {
 		t.Fatal("want invalid target channel error")
+	}
+}
+
+func TestCompareVersionsUsesStableReleaseIdentity(t *testing.T) {
+	for _, test := range []struct {
+		current string
+		target  string
+		want    VersionRelation
+	}{
+		{current: "v1.0.0", target: "1.2.0", want: VersionOlder},
+		{current: "1.2.0", target: "v1.2.0", want: VersionSame},
+		{current: "v2.0.0", target: "v1.2.0", want: VersionNewer},
+	} {
+		t.Run(test.current+"-"+test.target, func(t *testing.T) {
+			got, err := CompareVersions(test.current, test.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("CompareVersions(%q, %q) = %q, want %q", test.current, test.target, got, test.want)
+			}
+		})
 	}
 }

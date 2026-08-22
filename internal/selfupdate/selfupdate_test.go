@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -98,6 +99,11 @@ func writeFakeGH(t *testing.T, tag, fixtureDir string) {
 
 func buildFixture(t *testing.T, binaryContent []byte) string {
 	t.Helper()
+	oldReader := readExecutableBuildInfo
+	readExecutableBuildInfo = func(context.Context, string) (BuildInfo, error) {
+		return BuildInfo{Version: "0.5.0", Channel: ChannelStable, Commit: stableTestCommit, Distribution: DistributionGitHub}, nil
+	}
+	t.Cleanup(func() { readExecutableBuildInfo = oldReader })
 	dir := t.TempDir()
 	assetName := AssetName()
 	archivePath := filepath.Join(dir, assetName)
@@ -120,6 +126,10 @@ func buildFixture(t *testing.T, binaryContent []byte) string {
 	return dir
 }
 
+func stableTarget(version string) Target {
+	return Target{Channel: ChannelStable, Tag: version, Version: version, Commit: stableTestCommit}
+}
+
 func TestApplyReplacesRunningBinary(t *testing.T) {
 	fixture := buildFixture(t, []byte("new binary contents"))
 	writeFakeGH(t, "v0.5.0", fixture)
@@ -134,7 +144,7 @@ func TestApplyReplacesRunningBinary(t *testing.T) {
 	ExecutableOverride = func() (string, error) { return execPath, nil }
 	defer func() { ExecutableOverride = restore }()
 
-	if err := Apply("atqamz/hand", "v0.5.0"); err != nil {
+	if err := Apply("atqamz/hand", stableTarget("v0.5.0")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -178,6 +188,75 @@ func TestApplyReplacesRunningBinary(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsStagedBuildIdentityMismatch(t *testing.T) {
+	fixture := buildFixture(t, []byte("new binary contents"))
+	writeFakeGH(t, "v0.5.0", fixture)
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "hand")
+	if err := os.WriteFile(execPath, []byte("old binary contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldReader := readExecutableBuildInfo
+	readExecutableBuildInfo = func(context.Context, string) (BuildInfo, error) {
+		return BuildInfo{Version: "0.0.1", Channel: ChannelStable, Commit: edgeTestCommit, Distribution: DistributionGitHub}, nil
+	}
+	t.Cleanup(func() { readExecutableBuildInfo = oldReader })
+	oldOverride := ExecutableOverride
+	ExecutableOverride = func() (string, error) { return execPath, nil }
+	t.Cleanup(func() { ExecutableOverride = oldOverride })
+
+	err := Apply("atqamz/hand", stableTarget("v0.5.0"))
+	if err == nil || !strings.Contains(err.Error(), "build identity mismatch") {
+		t.Fatalf("Apply error = %v, want build identity mismatch", err)
+	}
+	got, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old binary contents" {
+		t.Fatalf("executable = %q, want old contents after identity refusal", got)
+	}
+}
+
+func TestApplyRollsBackWhenSelectedBuildIdentityVerificationFails(t *testing.T) {
+	fixture := buildFixture(t, []byte("new binary contents"))
+	writeFakeGH(t, "v0.5.0", fixture)
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "hand")
+	if err := os.WriteFile(execPath, []byte("old binary contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldReader := readExecutableBuildInfo
+	reads := 0
+	readExecutableBuildInfo = func(context.Context, string) (BuildInfo, error) {
+		reads++
+		if reads == 1 {
+			return BuildInfo{Version: "0.5.0", Channel: ChannelStable, Commit: stableTestCommit, Distribution: DistributionGitHub}, nil
+		}
+		return BuildInfo{Version: "0.5.0", Channel: ChannelStable, Commit: edgeTestCommit, Distribution: DistributionGitHub}, nil
+	}
+	t.Cleanup(func() { readExecutableBuildInfo = oldReader })
+	oldOverride := ExecutableOverride
+	ExecutableOverride = func() (string, error) { return execPath, nil }
+	t.Cleanup(func() { ExecutableOverride = oldOverride })
+
+	err := Apply("atqamz/hand", stableTarget("v0.5.0"))
+	if err == nil || !strings.Contains(err.Error(), "verify selected build identity") {
+		t.Fatalf("Apply error = %v, want selected identity verification failure", err)
+	}
+	got, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old binary contents" {
+		t.Fatalf("executable = %q, want old contents after rollback", got)
+	}
+}
+
 func TestApplyLeavesNoStagedFileWhenExtractionFails(t *testing.T) {
 	fixture := t.TempDir()
 	assetName := AssetName()
@@ -202,7 +281,7 @@ func TestApplyLeavesNoStagedFileWhenExtractionFails(t *testing.T) {
 	ExecutableOverride = func() (string, error) { return execPath, nil }
 	defer func() { ExecutableOverride = restore }()
 
-	err := Apply("atqamz/hand", "v0.5.0")
+	err := Apply("atqamz/hand", stableTarget("v0.5.0"))
 	if err == nil {
 		t.Fatal("want error when the asset is not a valid archive")
 	}
@@ -264,7 +343,7 @@ func TestApplyLeavesBinaryUnchangedOnChecksumMismatch(t *testing.T) {
 	ExecutableOverride = func() (string, error) { return execPath, nil }
 	t.Cleanup(func() { ExecutableOverride = restore })
 
-	err := Apply("atqamz/hand", "v0.5.0")
+	err := Apply("atqamz/hand", stableTarget("v0.5.0"))
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch for "+assetName) {
 		t.Fatalf("error = %v, want checksum mismatch for %s", err, assetName)
 	}

@@ -174,7 +174,7 @@ func TestUpdateHandsFleetReconciliationToTheNewlyInstalledBinary(t *testing.T) {
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs(nil)
@@ -213,7 +213,7 @@ func TestUpdateHandsOffToTheHandHomeRatherThanTheWorkingDirectory(t *testing.T) 
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs(nil)
@@ -242,7 +242,7 @@ func TestUpdateSkipsFleetReconciliationOutsideAFleetHome(t *testing.T) {
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs(nil)
@@ -272,7 +272,7 @@ func TestUpdateWarnsWhenHandHomeIsNotAFleetHome(t *testing.T) {
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -304,7 +304,7 @@ func TestUpdateReportsFailedFleetReconcileWhenTheNewBinaryExitsNonzero(t *testin
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "fixed the frobnicator", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs(nil)
@@ -335,7 +335,7 @@ func TestUpdateDegradesGracefullyWithoutReleaseNotes(t *testing.T) {
 	fixture := buildUpdateFixture(t, newBinaryFixtureBytes(t))
 	writeFakeGHUpdate(t, "v0.5.0", "", fixture)
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs(nil)
@@ -360,7 +360,7 @@ func checkedUpdateDoc(current, latest string, available bool) string {
 		"distribution: \"\"\n" +
 		"latest: " + latest + "\n" +
 		"latest_channel: stable\n" +
-		"latest_commit: unknown\n" +
+		"latest_commit: fedcba9876543210fedcba9876543210fedcba98\n" +
 		fmt.Sprintf("update_available: %t\n", available) +
 		"updated: false\n" +
 		"fleet_reconcile: not-applicable\n" +
@@ -445,7 +445,7 @@ func TestUpdateCheckReportsAvailableUpdateForDevBuild(t *testing.T) {
 func TestUpdatePropagatesLatestTagError(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	cmd := newUpdateCmd(stableBuild("v0.1.0"))
+	cmd := newUpdateCmd(directStableBuild("v0.1.0"))
 	cmd.SetArgs([]string{"--check"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("want error when gh is unreachable")
