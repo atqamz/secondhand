@@ -90,12 +90,14 @@ function Invoke-HandCapture {
     param([string]$Path, [string]$HandHome, [string[]]$Arguments)
     $hadHome = Test-Path Env:HAND_HOME
     $previousHome = $env:HAND_HOME
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
         if ($null -eq $HandHome) {
             Remove-Item Env:HAND_HOME -ErrorAction SilentlyContinue
         } else {
             $env:HAND_HOME = $HandHome
         }
+        $ErrorActionPreference = 'Continue'
         $lines = @(& $Path @Arguments 2>&1)
         $code = $LASTEXITCODE
         $output = $lines | Out-String
@@ -104,6 +106,7 @@ function Invoke-HandCapture {
             Output = $output
         }
     } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         if ($hadHome) {
             $env:HAND_HOME = $previousHome
         } else {
